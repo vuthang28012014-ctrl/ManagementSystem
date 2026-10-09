@@ -1,39 +1,65 @@
 """
-Hệ Thống Quản Lý Học Sinh — Tkinter UI
+Hệ Thống Quản Lý Học Sinh — Tkinter UI + GitHub Sync
 - Chọn tuần (35 tuần: HK1 = 1-18, HK2 = 19-35)
 - Mỗi tuần có riêng điểm danh / lý do / lỗi vi phạm
 - Cột phải có thanh cuộn dọc
 - Ô lỗi vi phạm có scrollbar dọc
 - 1 click: xem/sửa · 2 click: đổi trạng thái
 - Panel tìm kiếm: bấm Tìm → auto select ở CẢ 2 bảng
+- GitHub Sync: đọc/ghi file data chung qua GitHub API
+
+─────────────────────────────────────────────────────────────────
+CẤU TRÚC FILE:
+  ManagementSystem.py      ← file này
+  github_config.json       ← chứa owner/repo/token (KHÔNG commit)
+  output.txt               ← data (tự tạo khi save)
+
+github_config.json:
+  {
+    "owner": "your_github_username",
+    "repo": "ManagementSystem",
+    "branch": "main",
+    "path": "output.txt",
+    "token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+─────────────────────────────────────────────────────────────────
 """
 import os
+import sys
 import json
+import base64
+import time as _time
+import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 # ═══════════════════════════════════════════════════════════════
-# GITHUB SYNC — Cho phép nhiều người dùng chung 1 file data
+# GITHUB SYNC MODULE
 # ═══════════════════════════════════════════════════════════════
-import urllib.request
-import urllib.error
-import base64
-import time as _time
+try:
+    import urllib.request
+    import urllib.error
+    URLLIB_OK = True
+except ImportError:
+    URLLIB_OK = False
 
 GH_CONFIG_FILE = "github_config.json"
 
+# Biến global — được gán trong __init__
+GH_CONFIG = None          # dict config hoặc None
+GH_LAST_SYNC = 0.0        # timestamp lần sync gần nhất
+
 
 def _load_gh_config():
-    """Đọc file github_config.json. Trả None nếu không có."""
+    """Đọc file github_config.json. Trả None nếu không có/lỗi."""
     if not os.path.exists(GH_CONFIG_FILE):
         return None
     try:
         with open(GH_CONFIG_FILE, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        # Validate
         for k in ("owner", "repo", "token"):
             if not cfg.get(k):
-                print(f"[GitHub] Thiếu config: {k}")
+                print(f"[GitHub] Config thiếu key: {k}")
                 return None
         cfg.setdefault("branch", "main")
         cfg.setdefault("path", "output.txt")
@@ -44,12 +70,14 @@ def _load_gh_config():
 
 
 def github_fetch(config):
-    """Tải output.txt từ GitHub. Trả về string hoặc None."""
+    """Tải file từ GitHub. Trả về string hoặc None."""
+    if not URLLIB_OK or not config:
+        return None
     owner = config["owner"]
     repo = config["repo"]
     branch = config["branch"]
     path = config["path"]
-    # Dùng raw.githubusercontent + cache-buster để chắc chắn lấy bản mới
+    # cache-buster để lấy bản mới
     url = (f"https://raw.githubusercontent.com/{owner}/{repo}/"
            f"{branch}/{path}?t={int(_time.time())}")
     try:
@@ -61,7 +89,7 @@ def github_fetch(config):
             return resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            print("[GitHub] File chưa tồn tại trên GitHub — bắt đầu với rỗng")
+            print("[GitHub] File chưa có trên GitHub → bắt đầu rỗng")
             return "{}"
         print(f"[GitHub] Fetch lỗi HTTP {e.code}")
         return None
@@ -71,7 +99,9 @@ def github_fetch(config):
 
 
 def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh"):
-    """Đẩy output.txt lên GitHub. Trả về True/False."""
+    """Đẩy file lên GitHub. Trả True/False."""
+    if not URLLIB_OK or not config:
+        return False
     owner = config["owner"]
     repo = config["repo"]
     branch = config["branch"]
@@ -85,7 +115,7 @@ def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh
         "User-Agent": "ManagementSystem",
     }
 
-    # Lần đầu — lấy SHA hiện tại (bắt buộc khi update)
+    # Lấy SHA hiện tại (bắt buộc khi update)
     sha = None
     try:
         req = urllib.request.Request(api_url + f"?ref={branch}", headers=headers)
@@ -93,7 +123,7 @@ def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh
             sha = json.loads(resp.read().decode("utf-8")).get("sha")
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            sha = None  # File chưa tồn tại → tạo mới
+            sha = None
         else:
             print(f"[GitHub] Lỗi lấy SHA: HTTP {e.code}")
             return False
@@ -101,7 +131,7 @@ def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh
         print(f"[GitHub] Lỗi lấy SHA: {e}")
         return False
 
-    # Push — thử lại tối đa 3 lần nếu conflict
+    # Push — thử lại 3 lần nếu conflict
     for attempt in range(3):
         body = {
             "message": commit_msg,
@@ -122,27 +152,27 @@ def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh
                 if resp.status in (200, 201):
                     return True
         except urllib.error.HTTPError as e:
-            if e.code in (409, 422):   # Conflict — file đã đổi
-                print(f"[GitHub] Conflict, thử lại lần {attempt+1}/3...")
+            if e.code in (409, 422):
+                print(f"[GitHub] Conflict — thử lại {attempt+1}/3")
                 _time.sleep(1)
-                # Lấy SHA mới
                 try:
-                    req = urllib.request.Request(api_url + f"?ref={branch}",
-                                                   headers=headers)
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        sha = json.loads(resp.read().decode("utf-8")).get("sha")
+                    req2 = urllib.request.Request(api_url + f"?ref={branch}",
+                                                    headers=headers)
+                    with urllib.request.urlopen(req2, timeout=10) as resp2:
+                        sha = json.loads(resp2.read().decode("utf-8")).get("sha")
                 except Exception:
                     pass
                 continue
             else:
-                print(f"[GitHub] Push lỗi HTTP {e.code}: {e.read().decode()[:200]}")
+                print(f"[GitHub] Push HTTP {e.code}")
                 return False
         except Exception as e:
-            print(f"[GitHub] Push thất bại: {e}")
+            print(f"[GitHub] Push lỗi: {e}")
             return False
 
-    print("[GitHub] Push thất bại sau 3 lần thử")
+    print("[GitHub] Push thất bại sau 3 lần")
     return False
+
 
 # ═══════════════════════════════════════════════════════════════
 # DỮ LIỆU
@@ -187,51 +217,84 @@ def _chuan_hoa_tuan(w):
     return w
 
 
+# ═══════════════════════════════════════════════════════════════
+# DOC / GHI FILE (có tích hợp GitHub)
+# ═══════════════════════════════════════════════════════════════
 def doc_file(filename=TEN_FILE):
-    if not os.path.exists(filename): return 0
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        if not content: return 0
+    """Load data — ưu tiên GitHub, fallback local."""
+    content = None
+
+    # 1. Thử fetch từ GitHub
+    if GH_CONFIG:
+        print(f"[Load] Đang tải từ GitHub ({GH_CONFIG['owner']}/{GH_CONFIG['repo']})...")
+        gh_content = github_fetch(GH_CONFIG)
+        if gh_content:
+            content = gh_content
+            # Ghi đè local bằng data từ GitHub (backup)
+            try:
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print("[Load] ✓ Đã đồng bộ từ GitHub")
+            except Exception as e:
+                print(f"[Load] Không ghi local được: {e}")
+        else:
+            print("[Load] GitHub không có — fallback local")
+
+    # 2. Fallback local
+    if content is None:
+        if not os.path.exists(filename):
+            return 0
         try:
-            raw = json.loads(content)
-            for sid_str, info in raw.items():
-                sid = int(sid_str)
-                if "weeks" not in info:
-                    info["weeks"] = tao_du_lieu_tat_ca_tuan()
-                    info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
-                    info["weeks"][1]["reasons"]    = info.get("reasons", ly_do_moi())
-                    info["weeks"][1]["errors"]     = info.get("errors", loi_moi())
-                    for k in ("attendance", "reasons", "errors"):
-                        info.pop(k, None)
-                for t in range(1, TONG_TUAN + 1):
-                    if t not in info["weeks"]:
-                        info["weeks"][t] = tuan_moi()
-                    else:
-                        info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
-                HocSinh[sid] = info
-            return len(HocSinh)
-        except json.JSONDecodeError:
-            for line in content.splitlines():
-                line = line.strip()
-                if not line: continue
-                parts = line.split("|")
-                if len(parts) != 3: continue
-                try:
-                    sid = int(parts[0])
-                    HocSinh[sid] = {
-                        "name": parts[1], "class": parts[2],
-                        "weeks": tao_du_lieu_tat_ca_tuan(),
-                    }
-                except ValueError:
-                    continue
-            return len(HocSinh)
-    except Exception as e:
-        print(f"Lỗi đọc file: {e}")
+            with open(filename, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+        except Exception as e:
+            print(f"Lỗi đọc file: {e}")
+            return 0
+
+    if not content:
         return 0
+
+    # 3. Parse JSON
+    try:
+        raw = json.loads(content)
+        for sid_str, info in raw.items():
+            sid = int(sid_str)
+            # Migrate format cũ
+            if "weeks" not in info:
+                info["weeks"] = tao_du_lieu_tat_ca_tuan()
+                info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
+                info["weeks"][1]["reasons"]    = info.get("reasons", ly_do_moi())
+                info["weeks"][1]["errors"]     = info.get("errors", loi_moi())
+                for k in ("attendance", "reasons", "errors"):
+                    info.pop(k, None)
+            for t in range(1, TONG_TUAN + 1):
+                if t not in info["weeks"]:
+                    info["weeks"][t] = tuan_moi()
+                else:
+                    info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+            HocSinh[sid] = info
+        return len(HocSinh)
+    except json.JSONDecodeError:
+        # Fallback text format cũ
+        for line in content.splitlines():
+            line = line.strip()
+            if not line: continue
+            parts = line.split("|")
+            if len(parts) != 3: continue
+            try:
+                sid = int(parts[0])
+                HocSinh[sid] = {
+                    "name": parts[1], "class": parts[2],
+                    "weeks": tao_du_lieu_tat_ca_tuan(),
+                }
+            except ValueError:
+                continue
+        return len(HocSinh)
 
 
 def ghi_file(filename=TEN_FILE):
+    """Ghi data — lưu local + push GitHub."""
+    # Đảm bảo vắng không lý do → "Không phép"
     for sid, d in HocSinh.items():
         for t, w in d.get("weeks", {}).items():
             att = w.get("attendance", {})
@@ -239,13 +302,32 @@ def ghi_file(filename=TEN_FILE):
             for day in THU:
                 if not att.get(day, False) and not rea.get(day, "").strip():
                     rea[day] = LY_DO_MAC_DINH
-    data = {str(k): v for k, v in HocSinh.items()}
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    content = json.dumps({str(k): v for k, v in HocSinh.items()},
+                          indent=2, ensure_ascii=False)
+
+    # 1. Ghi local (đảm bảo không mất data)
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("[Save] ✓ Đã ghi local")
+    except Exception as e:
+        print(f"[Save] Lỗi ghi local: {e}")
+
+    # 2. Push GitHub
+    if GH_CONFIG:
+        print("[Save] Đang push lên GitHub...")
+        ok = github_push(GH_CONFIG, content)
+        if ok:
+            print("[Save] ✓ Đã push GitHub")
+        else:
+            print("[Save] ⚠ Push GitHub thất bại — data an toàn ở local")
+        return ok
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════
-# ỨNG DỤNG
+# ỨNG DỤNG UI
 # ═══════════════════════════════════════════════════════════════
 class UngDungQuanLy:
     NEN        = "#1e1e2e"
@@ -262,11 +344,13 @@ class UngDungQuanLy:
     CAM        = "#fab387"
 
     def __init__(self, root):
+        global GH_CONFIG
+
         self.root = root
         self.root.title("Hệ Thống Quản Lý Học Sinh")
-        self.root.geometry("1280x860")
+        self.root.geometry("1280x880")
         self.root.configure(bg=self.NEN)
-        self.root.minsize(1120, 740)
+        self.root.minsize(1120, 760)
 
         self.o_hien_tai = None
         self.hen_gio_click = None
@@ -276,17 +360,29 @@ class UngDungQuanLy:
         self.bien_tim_ten = None
         self.nhan_ket_qua = None
 
+        # ─── Load GitHub config ───
+        GH_CONFIG = _load_gh_config()
+        if GH_CONFIG:
+            print(f"[GitHub] Config: {GH_CONFIG['owner']}/{GH_CONFIG['repo']}"
+                  f" ({GH_CONFIG['branch']}:{GH_CONFIG['path']})")
+        else:
+            print("[GitHub] Không có config → dùng local file only")
+
+        # Load data
         da_doc = doc_file()
+
         self._cai_dat_style()
         self._tao_giao_dien()
 
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
 
+        # Trạng thái ban đầu
+        gh_status = "GitHub ✓" if GH_CONFIG else "Local only"
         if da_doc > 0:
-            self.thong_bao(f"Đã tải {da_doc} học sinh từ '{TEN_FILE}'", self.XANH_LA)
+            self.thong_bao(f"Đã tải {da_doc} HS · {gh_status}", self.XANH_LA)
         else:
-            self.thong_bao("Chưa có file dữ liệu. Hãy bắt đầu thêm học sinh.", self.CHU_MO)
+            self.thong_bao(f"Chưa có dữ liệu · {gh_status}", self.CHU_MO)
 
         self.root.protocol("WM_DELETE_WINDOW", self.khi_dong)
 
@@ -333,6 +429,15 @@ class UngDungQuanLy:
         tk.Label(header, text="🎓  QUẢN LÝ HỌC SINH",
                  bg=self.NEN2, fg=self.CHU,
                  font=("Segoe UI", 18, "bold")).pack(side="left", padx=20, pady=15)
+
+        # Badge GitHub
+        gh_badge = "☁ GitHub" if GH_CONFIG else "💾 Local"
+        gh_color = self.XANH_LA if GH_CONFIG else self.VANG
+        tk.Label(header, text=gh_badge,
+                 bg=self.NEN3, fg=gh_color,
+                 font=("Segoe UI", 9, "bold"), padx=10, pady=3
+                 ).pack(side="left", padx=(0, 15), pady=15)
+
         self.nhan_tong = tk.Label(header, text="Tổng: 0",
                                   bg=self.NEN2, fg=self.CHU_MO,
                                   font=("Segoe UI", 11))
@@ -390,7 +495,6 @@ class UngDungQuanLy:
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=20, pady=(20, 8))
 
         self.bien_tim_kiem = tk.StringVar()
-        # ✅ ĐỔI trace → trace_add
         self.bien_tim_kiem.trace_add("write", lambda *_: self.cap_nhat_bang())
         tk.Entry(form, textvariable=self.bien_tim_kiem,
                  bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
@@ -401,7 +505,11 @@ class UngDungQuanLy:
         self._tao_nut(form, "❌  Xóa học sinh đã chọn", self.xoa_da_chon,
                       self.DO, "#eb6f92").pack(fill="x", padx=20, pady=(15, 8))
         self._tao_nut(form, "💾  Lưu ngay", self.luu_ngay,
-                      self.XANH_LA, "#94e2d5").pack(fill="x", padx=20, pady=(0, 20))
+                      self.XANH_LA, "#94e2d5").pack(fill="x", padx=20, pady=(0, 8))
+
+        # ─── Nút Pull từ GitHub ───
+        self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
+                      self.XANH_DUONG, self.XANH_DUONG_H).pack(fill="x", padx=20, pady=(0, 20))
 
         # ═══ CỘT GIỮA: BẢNG HỌC SINH ═══
         giua = tk.Frame(main, bg=self.NEN)
@@ -449,7 +557,6 @@ class UngDungQuanLy:
                  bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 9)).pack(side="left")
         self.bien_tim_ma = tk.StringVar()
-        # ✅ ĐỔI trace → trace_add
         self.bien_tim_ma.trace_add("write", lambda *_: self.cap_nhat_bang())
         o_ma = tk.Entry(hang_tim, textvariable=self.bien_tim_ma,
                          bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
@@ -461,7 +568,6 @@ class UngDungQuanLy:
                  bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 9)).pack(side="left")
         self.bien_tim_ten = tk.StringVar()
-        # ✅ ĐỔI trace → trace_add
         self.bien_tim_ten.trace_add("write", lambda *_: self.cap_nhat_bang())
         o_ten = tk.Entry(hang_tim, textvariable=self.bien_tim_ten,
                           bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
@@ -704,6 +810,69 @@ class UngDungQuanLy:
         return b
 
     # ═══════════════════════════════════════════════════════════
+    # GITHUB ACTIONS
+    # ═══════════════════════════════════════════════════════════
+    def keo_github(self):
+        """Nút Tải từ GitHub — fetch data mới, hỏi trước khi ghi đè."""
+        global GH_CONFIG
+        if not GH_CONFIG:
+            self.thong_bao("⚠ Chưa có github_config.json", self.VANG)
+            return
+
+        if HocSinh:
+            ok = messagebox.askyesno(
+                "Xác nhận tải",
+                "Tải data mới từ GitHub sẽ GHI ĐÈ data hiện tại.\n"
+                "Mọi thay đổi chưa Save sẽ MẤT.\n\n"
+                "Tiếp tục?")
+            if not ok:
+                return
+
+        self.thong_bao("☁ Đang tải từ GitHub...", self.XANH_DUONG)
+        self.root.update()
+
+        content = github_fetch(GH_CONFIG)
+        if not content:
+            self.thong_bao("✗ Không tải được từ GitHub", self.DO)
+            return
+
+        # Xóa data cũ + parse mới
+        HocSinh.clear()
+        try:
+            raw = json.loads(content)
+        except Exception as e:
+            self.thong_bao(f"✗ Data GitHub hỏng: {e}", self.DO)
+            return
+
+        for sid_str, info in raw.items():
+            sid = int(sid_str)
+            if "weeks" not in info:
+                info["weeks"] = tao_du_lieu_tat_ca_tuan()
+                info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
+                info["weeks"][1]["reasons"]    = info.get("reasons", ly_do_moi())
+                info["weeks"][1]["errors"]     = info.get("errors", loi_moi())
+                for k in ("attendance", "reasons", "errors"):
+                    info.pop(k, None)
+            for t in range(1, TONG_TUAN + 1):
+                if t not in info["weeks"]:
+                    info["weeks"][t] = tuan_moi()
+                else:
+                    info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+            HocSinh[sid] = info
+
+        # Lưu local luôn
+        try:
+            with open(TEN_FILE, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception:
+            pass
+
+        self.cap_nhat_bang()
+        self.cap_nhat_diem_danh()
+        self._xoa_panel_ct()
+        self.thong_bao(f"✓ Đã tải {len(HocSinh)} HS từ GitHub", self.XANH_LA)
+
+    # ═══════════════════════════════════════════════════════════
     # TUẦN
     # ═══════════════════════════════════════════════════════════
     def _khi_doi_tuan(self, event=None):
@@ -778,11 +947,21 @@ class UngDungQuanLy:
         self.thong_bao(f"✓ Đã xóa {len(ds_ma)} học sinh", self.XANH_LA)
 
     def luu_ngay(self):
-        try:
-            ghi_file()
-            self.thong_bao(f"✓ Đã lưu {len(HocSinh)} học sinh vào '{TEN_FILE}'", self.XANH_LA)
-        except Exception as e:
-            self.thong_bao(f"✗ Lỗi lưu file: {e}", self.DO)
+        """Nút Lưu ngay — lưu local + push GitHub."""
+        if GH_CONFIG:
+            self.thong_bao("💾 Đang lưu local + push GitHub...", self.XANH_DUONG)
+            self.root.update()
+            ok = ghi_file()
+            if ok:
+                self.thong_bao(f"✓ Đã lưu {len(HocSinh)} HS lên GitHub", self.XANH_LA)
+            else:
+                self.thong_bao("⚠ Đã lưu local, push GitHub thất bại", self.VANG)
+        else:
+            try:
+                ghi_file()
+                self.thong_bao(f"✓ Đã lưu {len(HocSinh)} HS vào '{TEN_FILE}'", self.XANH_LA)
+            except Exception as e:
+                self.thong_bao(f"✗ Lỗi lưu: {e}", self.DO)
 
     def xoa_form(self):
         self.o_ma.delete(0, "end")
@@ -826,7 +1005,6 @@ class UngDungQuanLy:
         return False
 
     def tim_kiem(self):
-        """Nút Tìm — select + scroll đến HS khớp ở CẢ 2 bảng."""
         self.cap_nhat_bang()
 
         ds_khop = []
@@ -849,7 +1027,7 @@ class UngDungQuanLy:
 
         ds_iid = [str(ma) for ma in ds_khop]
 
-        # ═══ Bước 1: Select ở bảng DANH SÁCH ═══
+        # Select bảng danh sách
         try:
             self.bang.selection_set(ds_iid)
         except Exception:
@@ -862,10 +1040,10 @@ class UngDungQuanLy:
         except Exception:
             pass
 
-        # ═══ Bước 2: Refresh bảng ĐIỂM DANH (đồng bộ từ bảng danh sách) ═══
+        # Refresh bảng điểm danh
         self.cap_nhat_diem_danh()
 
-        # ═══ Bước 3: Select TẤT CẢ HS khớp ở bảng ĐIỂM DANH ═══
+        # Select bảng điểm danh (SAU khi refresh)
         try:
             self.bang_dd.selection_set(ds_iid)
         except Exception:
@@ -877,7 +1055,7 @@ class UngDungQuanLy:
         except Exception:
             pass
 
-        # ═══ Bước 4: Panel chi tiết ═══
+        # Panel chi tiết
         if len(ds_khop) == 1:
             d = HocSinh[first_ma]
             self.tieu_de_ct.config(
@@ -1173,8 +1351,12 @@ class UngDungQuanLy:
     def khi_dong(self):
         if self.hen_gio_click:
             self.root.after_cancel(self.hen_gio_click)
-        try: ghi_file()
-        except Exception: pass
+        try:
+            if GH_CONFIG:
+                print("\n[Close] Đang lưu + push GitHub...")
+            ghi_file()
+        except Exception:
+            pass
         self.root.destroy()
 
 
@@ -1182,6 +1364,17 @@ class UngDungQuanLy:
 # CHẠY
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    print("═" * 60)
+    print("  HỆ THỐNG QUẢN LÝ HỌC SINH")
+    print("═" * 60)
+    if os.path.exists(GH_CONFIG_FILE):
+        print(f"  Config: {GH_CONFIG_FILE}")
+    else:
+        print(f"  ⚠ Không có {GH_CONFIG_FILE} → chạy local-only")
+        print(f"  Để bật sync GitHub, tạo file {GH_CONFIG_FILE} với:")
+        print('    {"owner": "USER", "repo": "REPO", "token": "TOKEN"}')
+    print("═" * 60 + "\n")
+
     root = tk.Tk()
     UngDungQuanLy(root)
     root.mainloop()
