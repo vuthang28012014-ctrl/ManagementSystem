@@ -220,8 +220,21 @@ def _chuan_hoa_tuan(w):
 # ═══════════════════════════════════════════════════════════════
 # DOC / GHI FILE (có tích hợp GitHub)
 # ═══════════════════════════════════════════════════════════════
+def _object_pairs_hook_clean(pairs):
+    """
+    Callback cho json.loads — phát hiện duplicate keys.
+    Nếu có, log warning + giữ giá trị cuối cùng.
+    """
+    seen = {}
+    for k, v in pairs:
+        if k in seen:
+            print(f"[Warning] Duplicate key '{k}' trong JSON — bỏ qua bản cũ")
+        seen[k] = v
+    return seen
+
+
 def doc_file(filename=TEN_FILE):
-    """Load data — ưu tiên GitHub, fallback local."""
+    """Load data — ưu tiên GitHub, fallback local. Có detect duplicate keys."""
     content = None
 
     # 1. Thử fetch từ GitHub
@@ -230,7 +243,6 @@ def doc_file(filename=TEN_FILE):
         gh_content = github_fetch(GH_CONFIG)
         if gh_content:
             content = gh_content
-            # Ghi đè local bằng data từ GitHub (backup)
             try:
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(content)
@@ -254,12 +266,11 @@ def doc_file(filename=TEN_FILE):
     if not content:
         return 0
 
-    # 3. Parse JSON
+    # 3. Parse JSON với duplicate-key detection
     try:
-        raw = json.loads(content)
+        raw = json.loads(content, object_pairs_hook=_object_pairs_hook_clean)
         for sid_str, info in raw.items():
             sid = int(sid_str)
-            # Migrate format cũ
             if "weeks" not in info:
                 info["weeks"] = tao_du_lieu_tat_ca_tuan()
                 info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
@@ -274,8 +285,9 @@ def doc_file(filename=TEN_FILE):
                     info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
             HocSinh[sid] = info
         return len(HocSinh)
-    except json.JSONDecodeError:
-        # Fallback text format cũ
+    except json.JSONDecodeError as e:
+        print(f"[Load] JSON lỗi: {e}")
+        # Fallback format text cũ
         for line in content.splitlines():
             line = line.strip()
             if not line: continue
