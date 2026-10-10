@@ -1165,22 +1165,22 @@
       },
       "6": {
         "attendance": {
-          "T2": true,
-          "T3": true,
-          "T4": true,
-          "T5": true,
-          "T6": true,
-          "T7": true,
-          "CN": true
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
         },
         "reasons": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
         },
         "errors": {
           "T2": "",
