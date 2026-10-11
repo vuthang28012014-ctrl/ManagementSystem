@@ -1,4 +1,27 @@
+# Secrets
 github_config.json
+settings.json
+*.token
+.env
+
+# Data
+output.txt
+output.txt.bak.*
+output.txt.tmp
+
+# Logs
+app.log
+*.log
+
+# Python
 __pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# IDE
 .vscode/
-*.pyc
+.idea/
+*.swp
+.DS_Store
