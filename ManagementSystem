@@ -1,37 +1,129 @@
 """
-Hệ Thống Quản Lý Học Sinh — Tkinter UI + GitHub Sync
-- Chọn tuần (35 tuần: HK1 = 1-18, HK2 = 19-35)
-- Mỗi tuần có riêng điểm danh / lý do / lỗi vi phạm
-- Cột phải có thanh cuộn dọc
-- Ô lỗi vi phạm có scrollbar dọc
-- 1 click: xem/sửa · 2 click: đổi trạng thái
-- Panel tìm kiếm: bấm Tìm → auto select ở CẢ 2 bảng
-- GitHub Sync: đọc/ghi file data chung qua GitHub API
+Hệ Thống Quản Lý Học Sinh v2.0 — Full Fixes
+═════════════════════════════════════════════════════════════════
+CHANGELOG so với v1.0:
+  [CRITICAL]
+  • Token GitHub: đọc từ ENV GITHUB_TOKEN, fallback file (không log)
+  • UI không đơ: mọi thao tác GitHub chạy trong thread riêng
+  • Backup tự động: output.txt.bak.<timestamp> trước mỗi lần ghi
+  • Conflict: gắn updated_at, cảnh báo khi bị ghi đè bởi client khác
 
-─────────────────────────────────────────────────────────────────
-CẤU TRÚC FILE:
-  ManagementSystem.py      ← file này
-  github_config.json       ← chứa owner/repo/token (KHÔNG commit)
-  output.txt               ← data (tự tạo khi save)
+  [IMPORTANT]
+  • Validate schema JSON khi load (chống crash)
+  • Debounce filter 150ms (không lag khi gõ nhanh)
+  • Click delay 220ms → 180ms (cấu hình được)
+  • Giới hạn tuần có thể sửa (max_editable_week)
+  • Undo stack (Ctrl+Z / Ctrl+Y)
+  • Health check GitHub lúc khởi động
+  • Duplicate key → hiện lên status bar
+  • Keyboard shortcuts: Ctrl+S/F/N/Z/Y, Esc
+  • Rate limit GitHub (HTTP 403) xử lý riêng
 
-github_config.json:
-  {
-    "owner": "your_github_username",
-    "repo": "ManagementSystem",
-    "branch": "main",
-    "path": "output.txt",
-    "token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  }
-─────────────────────────────────────────────────────────────────
+  [MEDIUM]
+  • Lý do mặc định cấu hình được
+  • Lưu trạng thái sort (key + direction)
+  • Export CSV (tuần hiện tại / toàn bộ)
+  • Báo cáo thống kê (tỉ lệ chuyên cần)
+  • Xóa form → clear selection bảng
+  • Tìm kiếm theo Lớp
+  • Auto-save định kỳ
+  • Highlight HS đang xem ở bảng điểm danh
+
+  [MINOR]
+  • Log file app.log
+  • Magic numbers → settings.json
+  • Comment/docstring rõ ràng
+═════════════════════════════════════════════════════════════════
 """
 import os
 import sys
 import json
 import base64
 import time as _time
-import subprocess
+import csv
+import threading
+import traceback
+from datetime import datetime, timezone
+from collections import deque
+from copy import deepcopy
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+
+# ═══════════════════════════════════════════════════════════════
+# PATHS & CONSTANTS
+# ═══════════════════════════════════════════════════════════════
+SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
+GH_CONFIG_FILE = os.path.join(SCRIPT_DIR, "github_config.json")
+SETTINGS_FILE  = os.path.join(SCRIPT_DIR, "settings.json")
+DATA_FILE      = os.path.join(SCRIPT_DIR, "output.txt")
+LOG_FILE       = os.path.join(SCRIPT_DIR, "app.log")
+
+THU = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+COT_DIEMDANH = ["ten"] + THU
+COT_TEN = "ten"
+TONG_TUAN = 35
+TUAN_HK1 = 18
+
+DEFAULT_SETTINGS = {
+    "ly_do_mac_dinh":       "Không phép",
+    "click_delay_ms":       180,
+    "filter_debounce_ms":   150,
+    "auto_save_interval_s": 300,
+    "max_editable_week":    35,
+    "backup_count":         5,
+    "undo_stack_size":      30,
+    "sort_key":             "ma",
+    "sort_desc":            False,
+    "ly_do_goi_y":          ["Không phép", "Có phép", "Ốm", "Việc gia đình",
+                              "Đi khám bệnh", "Đại hội", "Thi HSG"],
+}
+
+# ═══════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════
+_log_lock = threading.Lock()
+
+def _log(level, msg):
+    """Ghi log ra file + stdout, thread-safe."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] [{level}] {msg}"
+    with _log_lock:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+    try:
+        print(line)
+    except Exception:
+        pass
+
+def log_info(msg):  _log("INFO",  msg)
+def log_warn(msg):  _log("WARN",  msg)
+def log_error(msg): _log("ERROR", msg)
+
+# ═══════════════════════════════════════════════════════════════
+# SETTINGS
+# ═══════════════════════════════════════════════════════════════
+def load_settings():
+    s = dict(DEFAULT_SETTINGS)
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for k, v in data.items():
+                if k in s:
+                    s[k] = v
+        except Exception as e:
+            log_warn(f"Không đọc được settings.json: {e}")
+    return s
+
+def save_settings(s):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(s, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log_warn(f"Không ghi được settings.json: {e}")
 
 # ═══════════════════════════════════════════════════════════════
 # GITHUB SYNC MODULE
@@ -43,100 +135,117 @@ try:
 except ImportError:
     URLLIB_OK = False
 
-GH_CONFIG_FILE = "github_config.json"
-
-# Biến global — được gán trong __init__
-GH_CONFIG = None          # dict config hoặc None
-GH_LAST_SYNC = 0.0        # timestamp lần sync gần nhất
-
+GH_CONFIG = None
 
 def _load_gh_config():
-    """Đọc file github_config.json. Trả None nếu không có/lỗi."""
-    if not os.path.exists(GH_CONFIG_FILE):
-        return None
-    try:
-        with open(GH_CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        for k in ("owner", "repo", "token"):
-            if not cfg.get(k):
-                print(f"[GitHub] Config thiếu key: {k}")
-                return None
-        cfg.setdefault("branch", "main")
-        cfg.setdefault("path", "output.txt")
-        return cfg
-    except Exception as e:
-        print(f"[GitHub] Không đọc được config: {e}")
-        return None
+    """Ưu tiên ENV GITHUB_TOKEN, fallback file config."""
+    cfg = None
+    if os.path.exists(GH_CONFIG_FILE):
+        try:
+            with open(GH_CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            log_error(f"Config GitHub hỏng: {e}")
+            return None
+
+    if not cfg:
+        # Thử build config từ ENV
+        env_token = os.environ.get("GITHUB_TOKEN", "").strip()
+        env_owner = os.environ.get("GITHUB_OWNER", "").strip()
+        env_repo  = os.environ.get("GITHUB_REPO",  "").strip()
+        if env_token and env_owner and env_repo:
+            cfg = {
+                "owner": env_owner,
+                "repo":  env_repo,
+                "token": env_token,
+                "branch": os.environ.get("GITHUB_BRANCH", "main"),
+                "path":   os.environ.get("GITHUB_PATH",   "output.txt"),
+            }
+        else:
+            return None
+
+    # Override bằng ENV nếu có
+    for k, env_k in (("token","GITHUB_TOKEN"), ("owner","GITHUB_OWNER"),
+                     ("repo","GITHUB_REPO"), ("branch","GITHUB_BRANCH"),
+                     ("path","GITHUB_PATH")):
+        v = os.environ.get(env_k, "").strip()
+        if v:
+            cfg[k] = v
+
+    for k in ("owner", "repo", "token"):
+        if not cfg.get(k):
+            log_warn(f"GitHub config thiếu key: {k}")
+            return None
+    cfg.setdefault("branch", "main")
+    cfg.setdefault("path",   "output.txt")
+    return cfg
 
 
-def github_fetch(config):
-    """Tải file từ GitHub. Trả về string hoặc None."""
+def github_fetch(config, timeout=15):
+    """Tải file từ GitHub. Trả string hoặc None."""
     if not URLLIB_OK or not config:
         return None
-    owner = config["owner"]
-    repo = config["repo"]
-    branch = config["branch"]
-    path = config["path"]
-    # cache-buster để lấy bản mới
-    url = (f"https://raw.githubusercontent.com/{owner}/{repo}/"
-           f"{branch}/{path}?t={int(_time.time())}")
+    url = (f"https://raw.githubusercontent.com/{config['owner']}/{config['repo']}/"
+           f"{config['branch']}/{config['path']}?t={int(_time.time())}")
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": "ManagementSystem",
+            "User-Agent": "ManagementSystem/2.0",
             "Cache-Control": "no-cache",
         })
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            print("[GitHub] File chưa có trên GitHub → bắt đầu rỗng")
+            log_info("GitHub: file chưa tồn tại → bắt đầu rỗng")
             return "{}"
-        print(f"[GitHub] Fetch lỗi HTTP {e.code}")
+        if e.code == 403:
+            log_error("GitHub: 403 – rate limit hoặc token sai")
+            return None
+        log_error(f"GitHub fetch HTTP {e.code}")
         return None
     except Exception as e:
-        print(f"[GitHub] Fetch thất bại: {e}")
+        log_error(f"GitHub fetch: {e}")
         return None
 
 
-def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh"):
-    """Đẩy file lên GitHub. Trả True/False."""
+def github_push(config, content, commit_msg=None):
+    """Push file. Retry 3 lần khi conflict. Trả (ok, err_msg)."""
     if not URLLIB_OK or not config:
-        return False
-    owner = config["owner"]
-    repo = config["repo"]
-    branch = config["branch"]
-    path = config["path"]
-    token = config["token"]
+        return False, "Không có config GitHub"
 
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    if not commit_msg:
+        commit_msg = f"Cập nhật lúc {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    api_url = (f"https://api.github.com/repos/{config['owner']}/"
+               f"{config['repo']}/contents/{config['path']}")
     headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "ManagementSystem",
+        "Authorization": f"token {config['token']}",
+        "Accept":        "application/vnd.github.v3+json",
+        "User-Agent":    "ManagementSystem/2.0",
     }
 
-    # Lấy SHA hiện tại (bắt buộc khi update)
-    sha = None
-    try:
-        req = urllib.request.Request(api_url + f"?ref={branch}", headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            sha = json.loads(resp.read().decode("utf-8")).get("sha")
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            sha = None
-        else:
-            print(f"[GitHub] Lỗi lấy SHA: HTTP {e.code}")
-            return False
-    except Exception as e:
-        print(f"[GitHub] Lỗi lấy SHA: {e}")
-        return False
+    def get_sha():
+        try:
+            req = urllib.request.Request(api_url + f"?ref={config['branch']}",
+                                          headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("sha")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            log_error(f"GitHub lấy SHA HTTP {e.code}")
+            return None
+        except Exception as e:
+            log_error(f"GitHub lấy SHA: {e}")
+            return None
 
-    # Push — thử lại 3 lần nếu conflict
+    sha = get_sha()
+
     for attempt in range(3):
         body = {
             "message": commit_msg,
             "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
-            "branch": branch,
+            "branch":  config["branch"],
         }
         if sha:
             body["sha"] = sha
@@ -150,53 +259,60 @@ def github_push(config, content, commit_msg="Cập nhật dữ liệu học sinh
             )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 if resp.status in (200, 201):
-                    return True
+                    return True, None
         except urllib.error.HTTPError as e:
             if e.code in (409, 422):
-                print(f"[GitHub] Conflict — thử lại {attempt+1}/3")
+                log_warn(f"GitHub conflict — thử lại {attempt+1}/3")
                 _time.sleep(1)
-                try:
-                    req2 = urllib.request.Request(api_url + f"?ref={branch}",
-                                                    headers=headers)
-                    with urllib.request.urlopen(req2, timeout=10) as resp2:
-                        sha = json.loads(resp2.read().decode("utf-8")).get("sha")
-                except Exception:
-                    pass
+                sha = get_sha()
                 continue
-            else:
-                print(f"[GitHub] Push HTTP {e.code}")
-                return False
+            if e.code == 403:
+                return False, "403 – token hết hạn hoặc rate limit"
+            return False, f"HTTP {e.code}"
         except Exception as e:
-            print(f"[GitHub] Push lỗi: {e}")
-            return False
+            return False, str(e)
 
-    print("[GitHub] Push thất bại sau 3 lần")
-    return False
+    return False, "Conflict sau 3 lần thử"
+
+
+def github_health_check(config):
+    """Trả (ok, msg). Chạy trong thread."""
+    if not config:
+        return False, "no config"
+    try:
+        url = (f"https://api.github.com/repos/{config['owner']}/{config['repo']}")
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"token {config['token']}",
+            "User-Agent":    "ManagementSystem/2.0",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("permissions", {}).get("push"):
+                    return True, "OK"
+                return False, "Không có quyền push"
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return False, "Token không hợp lệ"
+        if e.code == 404:
+            return False, "Repo không tồn tại"
+        return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, str(e)
+    return False, "unknown"
 
 
 # ═══════════════════════════════════════════════════════════════
-# DỮ LIỆU
+# DATA HELPERS
 # ═══════════════════════════════════════════════════════════════
-HocSinh = {}
-TEN_FILE = "output.txt"
-THU = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
-COT_DIEMDANH = ["ten"] + THU
-LY_DO_MAC_DINH = "Không phép"
-DO_TRE_CLICK_DUP = 220
-
-TONG_TUAN = 35
-TUAN_HK1 = 18
-TUAN_HK2 = 17
-
-
 def diem_danh_moi(): return {d: False for d in THU}
 def ly_do_moi():     return {d: "" for d in THU}
 def loi_moi():       return {d: "" for d in THU}
 
 def tuan_moi():
     return {"attendance": diem_danh_moi(),
-            "reasons": ly_do_moi(),
-            "errors": loi_moi()}
+            "reasons":    ly_do_moi(),
+            "errors":     loi_moi()}
 
 def tao_du_lieu_tat_ca_tuan():
     return {t: tuan_moi() for t in range(1, TONG_TUAN + 1)}
@@ -204,90 +320,113 @@ def tao_du_lieu_tat_ca_tuan():
 def ten_hoc_ky(tuan):
     return "Học kỳ 1" if tuan <= TUAN_HK1 else "Học kỳ 2"
 
-
 def _chuan_hoa_tuan(w):
-    if not isinstance(w, dict): w = {}
-    w.setdefault("attendance", diem_danh_moi())
-    w.setdefault("reasons", ly_do_moi())
-    w.setdefault("errors", loi_moi())
+    if not isinstance(w, dict):
+        w = {}
+    att = w.get("attendance")
+    rea = w.get("reasons")
+    err = w.get("errors")
+    if not isinstance(att, dict): att = {}
+    if not isinstance(rea, dict): rea = {}
+    if not isinstance(err, dict): err = {}
     for d in THU:
-        w["attendance"].setdefault(d, False)
-        w["reasons"].setdefault(d, "")
-        w["errors"].setdefault(d, "")
+        att.setdefault(d, False)
+        rea.setdefault(d, "")
+        err.setdefault(d, "")
+    w["attendance"] = att
+    w["reasons"]    = rea
+    w["errors"]     = err
     return w
 
 
+def validate_hs_info(info):
+    """Trả True nếu info đúng schema. Không sửa info."""
+    if not isinstance(info, dict):
+        return False
+    if not isinstance(info.get("name"),  str): return False
+    if not isinstance(info.get("class"), str): return False
+    if not isinstance(info.get("weeks"), dict): return False
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════
-# DOC / GHI FILE (có tích hợp GitHub)
+# LOAD / SAVE
 # ═══════════════════════════════════════════════════════════════
-def _object_pairs_hook_clean(pairs):
-    """
-    Callback cho json.loads — phát hiện duplicate keys.
-    Nếu có, log warning + giữ giá trị cuối cùng.
-    """
+def _object_pairs_hook_clean(pairs, warnings=None):
     seen = {}
     for k, v in pairs:
         if k in seen:
-            print(f"[Warning] Duplicate key '{k}' trong JSON — bỏ qua bản cũ")
+            msg = f"Duplicate key '{k}' trong JSON — giữ bản cuối"
+            log_warn(msg)
+            if warnings is not None:
+                warnings.append(msg)
         seen[k] = v
     return seen
 
 
-def doc_file(filename=TEN_FILE):
-    """Load data — ưu tiên GitHub, fallback local. Có detect duplicate keys."""
-    content = None
+def _backup_file(path, keep=5):
+    """Backup file với timestamp. Giữ N bản mới nhất."""
+    if not os.path.exists(path):
+        return
+    try:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = f"{path}.bak.{ts}"
+        with open(path, "rb") as src, open(bak, "wb") as dst:
+            dst.write(src.read())
+        # Dọn backup cũ
+        parent = os.path.dirname(path) or "."
+        base = os.path.basename(path) + ".bak."
+        baks = sorted(
+            [os.path.join(parent, f) for f in os.listdir(parent) if f.startswith(base)],
+            key=os.path.getmtime
+        )
+        for old in baks[:-keep]:
+            try: os.remove(old)
+            except Exception: pass
+    except Exception as e:
+        log_warn(f"Backup thất bại: {e}")
 
-    # 1. Thử fetch từ GitHub
+
+def doc_file(HocSinh, filename=DATA_FILE):
+    """Load data — ưu tiên GitHub, fallback local.
+    Trả về (số_hs, warnings_list)."""
+    warnings = []
+    content  = None
+
     if GH_CONFIG:
-        print(f"[Load] Đang tải từ GitHub ({GH_CONFIG['owner']}/{GH_CONFIG['repo']})...")
-        gh_content = github_fetch(GH_CONFIG)
-        if gh_content:
-            content = gh_content
+        log_info(f"Đang tải từ GitHub {GH_CONFIG['owner']}/{GH_CONFIG['repo']}...")
+        gh = github_fetch(GH_CONFIG)
+        if gh:
+            content = gh
             try:
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(content)
-                print("[Load] ✓ Đã đồng bộ từ GitHub")
+                log_info("✓ Đã đồng bộ từ GitHub")
             except Exception as e:
-                print(f"[Load] Không ghi local được: {e}")
+                log_warn(f"Không ghi local: {e}")
         else:
-            print("[Load] GitHub không có — fallback local")
+            log_warn("GitHub không có — fallback local")
 
-    # 2. Fallback local
     if content is None:
         if not os.path.exists(filename):
-            return 0
+            return 0, warnings
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 content = f.read().strip()
         except Exception as e:
-            print(f"Lỗi đọc file: {e}")
-            return 0
+            log_error(f"Đọc file lỗi: {e}")
+            return 0, warnings
 
     if not content:
-        return 0
+        return 0, warnings
 
-    # 3. Parse JSON với duplicate-key detection
     try:
-        raw = json.loads(content, object_pairs_hook=_object_pairs_hook_clean)
-        for sid_str, info in raw.items():
-            sid = int(sid_str)
-            if "weeks" not in info:
-                info["weeks"] = tao_du_lieu_tat_ca_tuan()
-                info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
-                info["weeks"][1]["reasons"]    = info.get("reasons", ly_do_moi())
-                info["weeks"][1]["errors"]     = info.get("errors", loi_moi())
-                for k in ("attendance", "reasons", "errors"):
-                    info.pop(k, None)
-            for t in range(1, TONG_TUAN + 1):
-                if t not in info["weeks"]:
-                    info["weeks"][t] = tuan_moi()
-                else:
-                    info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
-            HocSinh[sid] = info
-        return len(HocSinh)
+        raw = json.loads(
+            content,
+            object_pairs_hook=lambda p: _object_pairs_hook_clean(p, warnings)
+        )
     except json.JSONDecodeError as e:
-        print(f"[Load] JSON lỗi: {e}")
-        # Fallback format text cũ
+        log_error(f"JSON lỗi: {e} — thử format text cũ")
         for line in content.splitlines():
             line = line.strip()
             if not line: continue
@@ -301,47 +440,260 @@ def doc_file(filename=TEN_FILE):
                 }
             except ValueError:
                 continue
-        return len(HocSinh)
+        return len(HocSinh), warnings
+
+    # Migrate + validate
+    bad_count = 0
+    for sid_str, info in raw.items():
+        try:
+            sid = int(sid_str)
+        except ValueError:
+            bad_count += 1; continue
+
+        # Migration: format cũ top-level attendance/reasons/errors → weeks[1]
+        if "weeks" not in info:
+            info["weeks"] = tao_du_lieu_tat_ca_tuan()
+            info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
+            info["weeks"][1]["reasons"]    = info.get("reasons",    ly_do_moi())
+            info["weeks"][1]["errors"]     = info.get("errors",     loi_moi())
+            for k in ("attendance", "reasons", "errors"):
+                info.pop(k, None)
+
+        # Fill missing weeks
+        for t in range(1, TONG_TUAN + 1):
+            if t not in info["weeks"]:
+                info["weeks"][t] = tuan_moi()
+            else:
+                info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+
+        # Validate schema
+        if not validate_hs_info(info):
+            log_warn(f"HS {sid} sai schema — chuyển name/class thành str")
+            info["name"]  = str(info.get("name",  ""))
+            info["class"] = str(info.get("class", ""))
+
+        HocSinh[sid] = info
+
+    if bad_count:
+        warnings.append(f"{bad_count} HS có mã không hợp lệ đã bị bỏ qua")
+
+    return len(HocSinh), warnings
+
+# ═══════════════════════════════════════════════════════════════
+# MERGE DATA — union merge, không mất dữ liệu
+# ═══════════════════════════════════════════════════════════════
+def _normalize_remote(raw):
+    """Chuẩn hóa data remote về format chuẩn."""
+    out = {}
+    for sid_str, info in raw.items():
+        if sid_str == "_meta":
+            continue
+        try:
+            sid = int(sid_str)
+        except (ValueError, TypeError):
+            continue
+        if "weeks" not in info:
+            info["weeks"] = tao_du_lieu_tat_ca_tuan()
+            info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
+            info["weeks"][1]["reasons"]    = info.get("reasons",    ly_do_moi())
+            info["weeks"][1]["errors"]     = info.get("errors",     loi_moi())
+            for k in ("attendance", "reasons", "errors"):
+                info.pop(k, None)
+        for t in range(1, TONG_TUAN + 1):
+            if t not in info["weeks"]:
+                info["weeks"][t] = tuan_moi()
+            else:
+                info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+        if not validate_hs_info(info):
+            info["name"]  = str(info.get("name",  ""))
+            info["class"] = str(info.get("class", ""))
+        out[sid] = info
+    return out
 
 
-def ghi_file(filename=TEN_FILE):
-    """Ghi data — lưu local + push GitHub."""
-    # Đảm bảo vắng không lý do → "Không phép"
+def _merge_week(local_w, remote_w):
+    """
+    Union merge 1 tuần:
+      - attendance: OR (ai true thì true)
+      - reasons:    local nếu có, ngược lại remote
+      - errors:     local nếu có, ngược lại remote
+    """
+    merged = {"attendance": {}, "reasons": {}, "errors": {}}
+    for day in THU:
+        la = bool(local_w.get("attendance", {}).get(day, False))
+        ra = bool(remote_w.get("attendance", {}).get(day, False))
+        merged["attendance"][day] = la or ra
+
+        lr = (local_w.get("reasons",  {}).get(day, "") or "").strip()
+        rr = (remote_w.get("reasons", {}).get(day, "") or "").strip()
+        merged["reasons"][day] = lr if lr else rr
+
+        le = (local_w.get("errors",  {}).get(day, "") or "").strip()
+        re_ = (remote_w.get("errors", {}).get(day, "") or "").strip()
+        merged["errors"][day] = le if le else re_
+    return merged
+
+
+def _merge_hs(local_hs, remote_hs):
+    """Union merge 1 học sinh."""
+    merged = {
+        "name":  local_hs.get("name")  or remote_hs.get("name",  ""),
+        "class": local_hs.get("class") or remote_hs.get("class", ""),
+        "weeks": {},
+    }
+    lw = local_hs.get("weeks", {}) or {}
+    rw = remote_hs.get("weeks", {}) or {}
+    all_weeks = {str(k) for k in lw.keys()} | {str(k) for k in rw.keys()}
+    for wk in all_weeks:
+        l_val = lw.get(wk) or lw.get(int(wk) if wk.isdigit() else wk)
+        r_val = rw.get(wk) or rw.get(int(wk) if wk.isdigit() else wk)
+        if l_val and r_val:
+            merged["weeks"][wk] = _merge_week(l_val, r_val)
+        elif l_val:
+            merged["weeks"][wk] = l_val
+        else:
+            merged["weeks"][wk] = r_val
+    # Đảm bảo đủ 35 tuần
+    for t in range(1, TONG_TUAN + 1):
+        key = str(t)
+        if key not in merged["weeks"]:
+            merged["weeks"][key] = tuan_moi()
+    return merged
+
+
+def merge_data(local_data, remote_data):
+    """
+    Merge toàn bộ dataset.
+    local_data / remote_data: dict {sid_int: hs_info}
+    Trả về dict {sid_int: merged_info}
+    """
+    merged = {}
+    all_ids = set(local_data.keys()) | set(remote_data.keys())
+    for sid in all_ids:
+        l_hs = local_data.get(sid)
+        r_hs = remote_data.get(sid)
+        if l_hs and r_hs:
+            merged[sid] = _merge_hs(l_hs, r_hs)
+        elif l_hs:
+            merged[sid] = l_hs
+        else:
+            merged[sid] = r_hs
+    return merged
+
+def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE):
+    """
+    Pull remote → merge với local → ghi local → push.
+    Trả (ok_local, ok_gh, err, merged_dict_or_None).
+
+    merged_dict: chỉ khác None nếu có merge xảy ra (để UI refresh).
+    """
+    # Auto-fill lý do
     for sid, d in HocSinh.items():
         for t, w in d.get("weeks", {}).items():
             att = w.get("attendance", {})
             rea = w.setdefault("reasons", ly_do_moi())
             for day in THU:
                 if not att.get(day, False) and not rea.get(day, "").strip():
-                    rea[day] = LY_DO_MAC_DINH
+                    rea[day] = ly_do_mac_dinh
 
-    content = json.dumps({str(k): v for k, v in HocSinh.items()},
-                          indent=2, ensure_ascii=False)
+    merged_dict = None
 
-    # 1. Ghi local (đảm bảo không mất data)
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(content)
-        print("[Save] ✓ Đã ghi local")
-    except Exception as e:
-        print(f"[Save] Lỗi ghi local: {e}")
-
-    # 2. Push GitHub
+    # ─────── BƯỚC 1: PULL REMOTE ───────
     if GH_CONFIG:
-        print("[Save] Đang push lên GitHub...")
-        ok = github_push(GH_CONFIG, content)
-        if ok:
-            print("[Save] ✓ Đã push GitHub")
+        log_info("Đang pull data mới nhất từ GitHub...")
+        remote_raw = github_fetch(GH_CONFIG)
+        if remote_raw:
+            try:
+                parsed_raw = json.loads(
+                    remote_raw,
+                    object_pairs_hook=_object_pairs_hook_clean,
+                )
+                remote_data = _normalize_remote(parsed_raw)
+                local_data  = {int(k): v for k, v in HocSinh.items()}
+                merged_dict = merge_data(local_data, remote_data)
+                log_info(f"✓ Merge OK — {len(merged_dict)} HS "
+                         f"(local {len(local_data)} / remote {len(remote_data)})")
+            except Exception as e:
+                log_error(f"Merge fail: {e} — push local only")
+                merged_dict = None
         else:
-            print("[Save] ⚠ Push GitHub thất bại — data an toàn ở local")
-        return ok
-    return False
+            log_warn("Không fetch được remote — push local only")
+
+    # ─────── BƯỚC 2: ĐÓNG GÓI ───────
+    source = merged_dict if merged_dict is not None else HocSinh
+    payload = {
+        "_meta": {"updated_at": datetime.now(timezone.utc).isoformat()},
+    }
+    for k, v in source.items():
+        payload[str(k)] = v
+    content = json.dumps(payload, indent=2, ensure_ascii=False)
+
+    # Backup
+    _backup_file(filename, keep=DEFAULT_SETTINGS["backup_count"])
+
+    # Ghi local atomic
+    ok_local = False
+    try:
+        tmp = filename + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, filename)
+        ok_local = True
+        log_info("✓ Ghi local OK")
+    except Exception as e:
+        log_error(f"Ghi local lỗi: {e}")
+
+    # ─────── BƯỚC 3: PUSH ───────
+    if GH_CONFIG:
+        log_info("Đang push GitHub...")
+        ok_gh, err = github_push(GH_CONFIG, content)
+        if ok_gh:
+            log_info("✓ Push GitHub thành công")
+        else:
+            log_error(f"✗ Push GitHub fail: {err}")
+        return ok_local, ok_gh, err, merged_dict
+
+    return ok_local, False, "no config", merged_dict
 
 
 # ═══════════════════════════════════════════════════════════════
-# ỨNG DỤNG UI
+# UNDO / REDO STACK
+# ═══════════════════════════════════════════════════════════════
+class UndoStack:
+    def __init__(self, size=30):
+        self.undo = deque(maxlen=size)
+        self.redo = deque(maxlen=size)
+
+    def push(self, snapshot, label=""):
+        self.undo.append((snapshot, label, _time.time()))
+        self.redo.clear()
+
+    def do_undo(self):
+        if not self.undo: return None
+        cur = (None, "before-undo", 0)  # placeholder
+        return self.undo.pop()
+
+    def do_redo(self):
+        if not self.redo: return None
+        return self.redo.pop()
+
+    def push_redo(self, snapshot, label):
+        self.redo.append((snapshot, label, _time.time()))
+
+    def clear(self):
+        self.undo.clear(); self.redo.clear()
+
+    def can_undo(self): return bool(self.undo)
+    def can_redo(self): return bool(self.redo)
+
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN APP
 # ═══════════════════════════════════════════════════════════════
 class UngDungQuanLy:
+    # ─── Palette (Catppuccin Mocha) ───
     NEN        = "#1e1e2e"
     NEN2       = "#282a3a"
     NEN3       = "#313244"
@@ -359,57 +711,131 @@ class UngDungQuanLy:
         global GH_CONFIG
 
         self.root = root
-        self.root.title("Hệ Thống Quản Lý Học Sinh")
+        self.root.title("Hệ Thống Quản Lý Học Sinh v2.0")
         self.root.geometry("1280x880")
         self.root.configure(bg=self.NEN)
         self.root.minsize(1120, 760)
 
-        self.o_hien_tai = None
-        self.hen_gio_click = None
-        self.tuan_hien_tai = 1
+        # Settings
+        self.settings = load_settings()
 
-        self.bien_tim_ma = None
-        self.bien_tim_ten = None
-        self.nhan_ket_qua = None
+        # State
+        self.HocSinh         = {}
+        self.o_hien_tai      = None
+        self.hen_gio_click   = None
+        self.tuan_hien_tai   = 1
+        self.bien_tim_ma     = None
+        self.bien_tim_ten    = None
+        self.bien_tim_lop    = None
+        self.nhan_ket_qua    = None
+        self.khoa_sap_xep    = self.settings["sort_key"]
+        self.dao_sap_xep     = self.settings["sort_desc"]
+        self._dirty          = False
+        self._debounce_job   = None
+        self._saving         = False
 
-        # ─── Load GitHub config ───
+        # Undo
+        self.undo_stack = UndoStack(self.settings["undo_stack_size"])
+
+        # GitHub config
         GH_CONFIG = _load_gh_config()
         if GH_CONFIG:
-            print(f"[GitHub] Config: {GH_CONFIG['owner']}/{GH_CONFIG['repo']}"
-                  f" ({GH_CONFIG['branch']}:{GH_CONFIG['path']})")
+            log_info(f"GitHub: {GH_CONFIG['owner']}/{GH_CONFIG['repo']} "
+                     f"({GH_CONFIG['branch']}:{GH_CONFIG['path']})")
         else:
-            print("[GitHub] Không có config → dùng local file only")
+            log_info("Không có GitHub config — chạy local-only")
 
         # Load data
-        da_doc = doc_file()
+        n, warns = doc_file(self.HocSinh)
 
         self._cai_dat_style()
         self._tao_giao_dien()
+        self._bind_shortcuts()
 
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
 
-        # Trạng thái ban đầu
         gh_status = "GitHub ✓" if GH_CONFIG else "Local only"
-        if da_doc > 0:
-            self.thong_bao(f"Đã tải {da_doc} HS · {gh_status}", self.XANH_LA)
+        if n > 0:
+            msg = f"Đã tải {n} HS · {gh_status}"
+            if warns:
+                msg += f" · ⚠ {len(warns)} cảnh báo"
+            self.thong_bao(msg, self.XANH_LA)
         else:
             self.thong_bao(f"Chưa có dữ liệu · {gh_status}", self.CHU_MO)
 
-        self.root.protocol("WM_DELETE_WINDOW", self.khi_dong)
+        if warns:
+            log_warn("Load warnings:\n  - " + "\n  - ".join(warns))
 
+        # Health check GitHub (async)
+        if GH_CONFIG:
+            self._async(self._health_check_gh)
+
+        # Auto-save loop
+        self._schedule_auto_save()
+
+        self.root.protocol("WM_DELETE_WINDOW", self.khi_dong)
         self.o_ma.focus_set()
-        self.o_ma.bind("<Return>", lambda e: self.o_ten.focus_set())
+
+        self.o_ma.bind("<Return>",  lambda e: self.o_ten.focus_set())
         self.o_ten.bind("<Return>", lambda e: self.o_lop.focus_set())
         self.o_lop.bind("<Return>", lambda e: self.them_hoc_sinh())
 
+    # ═══ Threading helpers ═══
+    def _async(self, fn, on_success=None, on_error=None):
+        def worker():
+            try:
+                result = fn()
+                if on_success:
+                    self.root.after(0, lambda: on_success(result))
+            except Exception as e:
+                tb = traceback.format_exc()
+                log_error(f"Async task fail: {e}\n{tb}")
+                if on_error:
+                    self.root.after(0, lambda: on_error(e))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _health_check_gh(self):
+        global GH_CONFIG
+        ok, msg = github_health_check(GH_CONFIG)
+        self.root.after(0, lambda: self._on_health_result(ok, msg))
+
+    def _on_health_result(self, ok, msg):
+        if not hasattr(self, "gh_badge"): return
+        if ok:
+            self.gh_badge.config(text="☁ GitHub ✓", fg=self.XANH_LA)
+            log_info("GitHub health check: OK")
+        else:
+            self.gh_badge.config(text=f"⚠ GitHub: {msg}", fg=self.DO)
+            log_warn(f"GitHub health check fail: {msg}")
+
+    # ═══ Keyboard shortcuts ═══
+    def _bind_shortcuts(self):
+        self.root.bind_all("<Control-s>", lambda e: self.luu_ngay())
+        self.root.bind_all("<Control-S>", lambda e: self.luu_ngay())
+        self.root.bind_all("<Control-f>", lambda e: self._focus_tim())
+        self.root.bind_all("<Control-F>", lambda e: self._focus_tim())
+        self.root.bind_all("<Control-n>", lambda e: self.o_ma.focus_set())
+        self.root.bind_all("<Control-N>", lambda e: self.o_ma.focus_set())
+        self.root.bind_all("<Control-z>", lambda e: self.undo())
+        self.root.bind_all("<Control-Z>", lambda e: self.undo())
+        self.root.bind_all("<Control-y>", lambda e: self.redo())
+        self.root.bind_all("<Control-Y>", lambda e: self.redo())
+        self.root.bind_all("<Escape>",    lambda e: self._xoa_panel_ct())
+
+    def _focus_tim(self):
+        if hasattr(self, "o_tim_ma") and self.o_tim_ma:
+            self.o_tim_ma.focus_set()
+            self.o_tim_ma.selection_range(0, "end")
+
+    # ═══ Style ═══
     def _cai_dat_style(self):
         s = ttk.Style()
         s.theme_use("clam")
         s.configure("Treeview",
                     background=self.NEN2, foreground=self.CHU,
-                    fieldbackground=self.NEN2,
-                    borderwidth=0, font=("Segoe UI", 10), rowheight=28)
+                    fieldbackground=self.NEN2, borderwidth=0,
+                    font=("Segoe UI", 10), rowheight=28)
         s.map("Treeview",
               background=[("selected", self.XANH_DUONG)],
               foreground=[("selected", "#1e1e2e")])
@@ -421,71 +847,81 @@ class UngDungQuanLy:
                     background=self.NEN3, troughcolor=self.NEN,
                     borderwidth=0, arrowsize=12)
         s.configure("TCombobox",
-                    fieldbackground=self.NEN3,
-                    background=self.NEN3,
-                    foreground=self.CHU,
-                    arrowcolor=self.CHU,
-                    borderwidth=0,
-                    font=("Segoe UI", 10))
+                    fieldbackground=self.NEN3, background=self.NEN3,
+                    foreground=self.CHU, arrowcolor=self.CHU,
+                    borderwidth=0, font=("Segoe UI", 10))
         s.map("TCombobox",
               fieldbackground=[("readonly", self.NEN3)],
               foreground=[("readonly", self.CHU)],
               selectbackground=[("readonly", self.NEN3)],
               selectforeground=[("readonly", self.CHU)])
 
+    # ═══ UI ═══
     def _tao_giao_dien(self):
-        # ── Header ──
+        # Header
         header = tk.Frame(self.root, bg=self.NEN2, height=64)
-        header.pack(fill="x")
-        header.pack_propagate(False)
+        header.pack(fill="x"); header.pack_propagate(False)
         tk.Label(header, text="🎓  QUẢN LÝ HỌC SINH",
                  bg=self.NEN2, fg=self.CHU,
                  font=("Segoe UI", 18, "bold")).pack(side="left", padx=20, pady=15)
 
-        # Badge GitHub
-        gh_badge = "☁ GitHub" if GH_CONFIG else "💾 Local"
-        gh_color = self.XANH_LA if GH_CONFIG else self.VANG
-        tk.Label(header, text=gh_badge,
-                 bg=self.NEN3, fg=gh_color,
-                 font=("Segoe UI", 9, "bold"), padx=10, pady=3
-                 ).pack(side="left", padx=(0, 15), pady=15)
+        gh_text  = "☁ GitHub …" if GH_CONFIG else "💾 Local only"
+        gh_color = self.XANH_DUONG if GH_CONFIG else self.VANG
+        self.gh_badge = tk.Label(header, text=gh_text,
+                                  bg=self.NEN3, fg=gh_color,
+                                  font=("Segoe UI", 9, "bold"),
+                                  padx=10, pady=3)
+        self.gh_badge.pack(side="left", padx=(0, 15), pady=15)
 
         self.nhan_tong = tk.Label(header, text="Tổng: 0",
-                                  bg=self.NEN2, fg=self.CHU_MO,
-                                  font=("Segoe UI", 11))
+                                   bg=self.NEN2, fg=self.CHU_MO,
+                                   font=("Segoe UI", 11))
         self.nhan_tong.pack(side="right", padx=20)
 
         main = tk.Frame(self.root, bg=self.NEN)
         main.pack(fill="both", expand=True, padx=20, pady=(15, 0))
 
-        # ═══ CỘT TRÁI: FORM ═══
-        khung_trai = tk.Frame(main, bg=self.NEN2, width=290)
-        khung_trai.pack(side="left", fill="y", padx=(0, 15))
-        khung_trai.pack_propagate(False)
+        self._tao_cot_trai(main)
+        self._tao_cot_giua(main)
+        self._tao_cot_phai(main)
 
-        canvas_form = tk.Canvas(khung_trai, bg=self.NEN2, highlightthickness=0, bd=0)
-        cuon_form = ttk.Scrollbar(khung_trai, orient="vertical", command=canvas_form.yview)
-        canvas_form.configure(yscrollcommand=cuon_form.set)
-        cuon_form.pack(side="right", fill="y")
-        canvas_form.pack(side="left", fill="both", expand=True)
+        # Status bar
+        self.thanh_trang_thai = tk.Label(self.root, text="Sẵn sàng",
+                                          bg=self.NEN2, fg=self.CHU_MO,
+                                          font=("Segoe UI", 9),
+                                          anchor="w", padx=15)
+        self.thanh_trang_thai.pack(fill="x", side="bottom", ipady=6)
 
-        form = tk.Frame(canvas_form, bg=self.NEN2)
-        cua_so_form = canvas_form.create_window((0, 0), window=form, anchor="nw")
-        form.bind("<Configure>", lambda e: canvas_form.configure(scrollregion=canvas_form.bbox("all")))
-        canvas_form.bind("<Configure>", lambda e: canvas_form.itemconfig(cua_so_form, width=e.width))
+    def _tao_cot_trai(self, parent):
+        khung = tk.Frame(parent, bg=self.NEN2, width=290)
+        khung.pack(side="left", fill="y", padx=(0, 15))
+        khung.pack_propagate(False)
 
-        def _cuon(e): canvas_form.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        def _cuon_lin(e): canvas_form.yview_scroll(int(-1 if e.num == 4 else 1), "units")
-        def _g(e):
-            canvas_form.bind_all("<MouseWheel>", _cuon)
-            canvas_form.bind_all("<Button-4>", _cuon_lin)
-            canvas_form.bind_all("<Button-5>", _cuon_lin)
-        def _b(e):
-            canvas_form.unbind_all("<MouseWheel>")
-            canvas_form.unbind_all("<Button-4>")
-            canvas_form.unbind_all("<Button-5>")
-        canvas_form.bind("<Enter>", _g)
-        canvas_form.bind("<Leave>", _b)
+        canvas = tk.Canvas(khung, bg=self.NEN2, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(khung, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        form = tk.Frame(canvas, bg=self.NEN2)
+        win = canvas.create_window((0, 0), window=form, anchor="nw")
+        form.bind("<Configure>",
+                  lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(win, width=e.width))
+
+        def _on_wheel(e):  canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        def _on_lin(e):    canvas.yview_scroll(int(-1 if e.num == 4 else 1), "units")
+        def _enter(e):
+            canvas.bind_all("<MouseWheel>", _on_wheel)
+            canvas.bind_all("<Button-4>",   _on_lin)
+            canvas.bind_all("<Button-5>",   _on_lin)
+        def _leave(e):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+        canvas.bind("<Enter>", _enter)
+        canvas.bind("<Leave>", _leave)
 
         tk.Label(form, text="THÊM HỌC SINH",
                  bg=self.NEN2, fg=self.XANH_DUONG,
@@ -496,9 +932,11 @@ class UngDungQuanLy:
         self.o_lop = self._tao_o(form, "Lớp")
 
         self._tao_nut(form, "➕  Thêm học sinh", self.them_hoc_sinh,
-                      self.XANH_DUONG, self.XANH_DUONG_H).pack(fill="x", padx=20, pady=(20, 8))
-        self._tao_nut(form, "🗑  Xóa form", self.xoa_form,
-                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
+                      self.XANH_DUONG, self.XANH_DUONG_H
+                      ).pack(fill="x", padx=20, pady=(20, 8))
+        self._tao_nut(form, "🗑  Xóa form (Esc)", self.xoa_form,
+                      self.NEN3, self.NEN3
+                      ).pack(fill="x", padx=20, pady=(0, 20))
 
         tk.Frame(form, bg=self.NEN3, height=1).pack(fill="x", padx=20)
 
@@ -507,24 +945,30 @@ class UngDungQuanLy:
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=20, pady=(20, 8))
 
         self.bien_tim_kiem = tk.StringVar()
-        self.bien_tim_kiem.trace_add("write", lambda *_: self.cap_nhat_bang())
+        self.bien_tim_kiem.trace_add("write", lambda *_: self._schedule_filter())
         tk.Entry(form, textvariable=self.bien_tim_kiem,
                  bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
-                 relief="flat", font=("Segoe UI", 11)).pack(fill="x", padx=20, pady=(0, 15), ipady=6)
+                 relief="flat", font=("Segoe UI", 11)
+                 ).pack(fill="x", padx=20, pady=(0, 15), ipady=6)
 
         tk.Frame(form, bg=self.NEN3, height=1).pack(fill="x", padx=20, pady=(5, 0))
 
-        self._tao_nut(form, "❌  Xóa học sinh đã chọn", self.xoa_da_chon,
+        self._tao_nut(form, "❌  Xóa HS đã chọn", self.xoa_da_chon,
                       self.DO, "#eb6f92").pack(fill="x", padx=20, pady=(15, 8))
-        self._tao_nut(form, "💾  Lưu ngay", self.luu_ngay,
+        self._tao_nut(form, "💾  Lưu (Ctrl+S)", self.luu_ngay,
                       self.XANH_LA, "#94e2d5").pack(fill="x", padx=20, pady=(0, 8))
-
-        # ─── Nút Pull từ GitHub ───
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
-                      self.XANH_DUONG, self.XANH_DUONG_H).pack(fill="x", padx=20, pady=(0, 20))
+                      self.XANH_DUONG, self.XANH_DUONG_H
+                      ).pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
+                      self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📁  Xuất CSV", self.xuat_csv,
+                      self.CAM, "#f5a76c").pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
+                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
 
-        # ═══ CỘT GIỮA: BẢNG HỌC SINH ═══
-        giua = tk.Frame(main, bg=self.NEN)
+    def _tao_cot_giua(self, parent):
+        giua = tk.Frame(parent, bg=self.NEN)
         giua.pack(side="left", fill="both", expand=True)
 
         tk.Label(giua, text="DANH SÁCH HỌC SINH",
@@ -535,136 +979,128 @@ class UngDungQuanLy:
         khung_bang.pack(fill="both", expand=True)
 
         cols = ("ma", "ten", "lop")
-        self.bang = ttk.Treeview(khung_bang, columns=cols, show="headings", selectmode="extended")
-        self.bang.heading("ma",  text="Mã",  command=lambda: self.sap_xep("ma"))
+        self.bang = ttk.Treeview(khung_bang, columns=cols, show="headings",
+                                  selectmode="extended")
+        self.bang.heading("ma",  text="Mã",     command=lambda: self.sap_xep("ma"))
         self.bang.heading("ten", text="Họ tên", command=lambda: self.sap_xep("ten"))
-        self.bang.heading("lop", text="Lớp",  command=lambda: self.sap_xep("lop"))
+        self.bang.heading("lop", text="Lớp",    command=lambda: self.sap_xep("lop"))
         self.bang.column("ma",  width=60,  anchor="center")
         self.bang.column("ten", width=200, anchor="w")
         self.bang.column("lop", width=90,  anchor="center")
-        self.bang.tag_configure("le",  background=self.NEN2)
+        self.bang.tag_configure("le",   background=self.NEN2)
         self.bang.tag_configure("chan", background=self.NEN)
 
-        cuon_bang = ttk.Scrollbar(khung_bang, orient="vertical", command=self.bang.yview)
-        self.bang.configure(yscrollcommand=cuon_bang.set)
+        scroll = ttk.Scrollbar(khung_bang, orient="vertical", command=self.bang.yview)
+        self.bang.configure(yscrollcommand=scroll.set)
         self.bang.pack(side="left", fill="both", expand=True)
-        cuon_bang.pack(side="right", fill="y")
+        scroll.pack(side="right", fill="y")
 
         self.bang.bind("<Double-1>", self.tai_vao_form)
         self.bang.bind("<Delete>", lambda e: self.xoa_da_chon())
         self.bang.bind("<<TreeviewSelect>>", lambda e: self.cap_nhat_diem_danh())
 
-        # ── Panel tìm kiếm ──
+        # Panel tìm kiếm
         khung_tim = tk.Frame(giua, bg=self.NEN2)
         khung_tim.pack(fill="x", pady=(8, 0))
 
-        hang_tim = tk.Frame(khung_tim, bg=self.NEN2)
-        hang_tim.pack(fill="x", padx=10, pady=8)
+        hang1 = tk.Frame(khung_tim, bg=self.NEN2)
+        hang1.pack(fill="x", padx=10, pady=(8, 4))
 
-        tk.Label(hang_tim, text="🔍 TÌM:",
-                 bg=self.NEN2, fg=self.XANH_DUONG,
+        tk.Label(hang1, text="🔍 TÌM:", bg=self.NEN2, fg=self.XANH_DUONG,
                  font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
 
-        tk.Label(hang_tim, text="Mã:",
-                 bg=self.NEN2, fg=self.CHU_MO,
+        tk.Label(hang1, text="Mã:", bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 9)).pack(side="left")
         self.bien_tim_ma = tk.StringVar()
-        self.bien_tim_ma.trace_add("write", lambda *_: self.cap_nhat_bang())
-        o_ma = tk.Entry(hang_tim, textvariable=self.bien_tim_ma,
-                         bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
-                         relief="flat", width=8, font=("Segoe UI", 10))
-        o_ma.pack(side="left", padx=(4, 10), ipady=4)
-        o_ma.bind("<Return>", lambda e: self.tim_kiem())
+        self.bien_tim_ma.trace_add("write", lambda *_: self._schedule_filter())
+        self.o_tim_ma = tk.Entry(hang1, textvariable=self.bien_tim_ma,
+                                  bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
+                                  relief="flat", width=8, font=("Segoe UI", 10))
+        self.o_tim_ma.pack(side="left", padx=(4, 10), ipady=4)
 
-        tk.Label(hang_tim, text="Tên:",
-                 bg=self.NEN2, fg=self.CHU_MO,
+        tk.Label(hang1, text="Tên:", bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 9)).pack(side="left")
         self.bien_tim_ten = tk.StringVar()
-        self.bien_tim_ten.trace_add("write", lambda *_: self.cap_nhat_bang())
-        o_ten = tk.Entry(hang_tim, textvariable=self.bien_tim_ten,
-                          bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
-                          relief="flat", width=16, font=("Segoe UI", 10))
-        o_ten.pack(side="left", padx=(4, 10), ipady=4)
-        o_ten.bind("<Return>", lambda e: self.tim_kiem())
+        self.bien_tim_ten.trace_add("write", lambda *_: self._schedule_filter())
+        tk.Entry(hang1, textvariable=self.bien_tim_ten,
+                 bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
+                 relief="flat", width=14, font=("Segoe UI", 10)
+                 ).pack(side="left", padx=(4, 10), ipady=4)
 
-        self._tao_nut(hang_tim, "🔍 Tìm", self.tim_kiem,
+        tk.Label(hang1, text="Lớp:", bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9)).pack(side="left")
+        self.bien_tim_lop = tk.StringVar()
+        self.bien_tim_lop.trace_add("write", lambda *_: self._schedule_filter())
+        tk.Entry(hang1, textvariable=self.bien_tim_lop,
+                 bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
+                 relief="flat", width=10, font=("Segoe UI", 10)
+                 ).pack(side="left", padx=(4, 10), ipady=4)
+
+        self._tao_nut(hang1, "🔍 Tìm", self.tim_kiem,
                       self.XANH_DUONG, self.XANH_DUONG_H).pack(side="left", padx=2)
-        self._tao_nut(hang_tim, "✗ Xóa lọc", self.xoa_loc,
+        self._tao_nut(hang1, "✗ Xóa lọc", self.xoa_loc,
                       self.NEN3, self.NEN3).pack(side="left", padx=2)
 
-        self.nhan_ket_qua = tk.Label(hang_tim, text="",
-                                       bg=self.NEN2, fg=self.CHU_MO,
-                                       font=("Segoe UI", 9, "italic"))
+        self.nhan_ket_qua = tk.Label(hang1, text="",
+                                      bg=self.NEN2, fg=self.CHU_MO,
+                                      font=("Segoe UI", 9, "italic"))
         self.nhan_ket_qua.pack(side="right")
 
-        # ═══ CỘT PHẢI: QUẢN LÝ SĨ SỐ ═══
-        khung_phai_ngoai = tk.Frame(main, bg=self.NEN2, width=460)
-        khung_phai_ngoai.pack(side="left", fill="y", padx=(15, 0))
-        khung_phai_ngoai.pack_propagate(False)
+    def _tao_cot_phai(self, parent):
+        ngoai = tk.Frame(parent, bg=self.NEN2, width=460)
+        ngoai.pack(side="left", fill="y", padx=(15, 0))
+        ngoai.pack_propagate(False)
 
-        canvas_phai = tk.Canvas(khung_phai_ngoai, bg=self.NEN2,
-                                 highlightthickness=0, bd=0)
-        cuon_phai = ttk.Scrollbar(khung_phai_ngoai, orient="vertical",
-                                    command=canvas_phai.yview)
-        canvas_phai.configure(yscrollcommand=cuon_phai.set)
+        canvas = tk.Canvas(ngoai, bg=self.NEN2, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(ngoai, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
 
-        cuon_phai.pack(side="right", fill="y")
-        canvas_phai.pack(side="left", fill="both", expand=True)
+        khung = tk.Frame(canvas, bg=self.NEN2)
+        win = canvas.create_window((0, 0), window=khung, anchor="nw")
+        khung.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(win, width=e.width))
 
-        khung_phai = tk.Frame(canvas_phai, bg=self.NEN2)
-        cua_so_phai = canvas_phai.create_window((0, 0), window=khung_phai, anchor="nw")
+        def _wheel(e):
+            if getattr(e, "widget", None) is getattr(self, "bang_dd", None): return
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        def _lin(e):
+            if getattr(e, "widget", None) is getattr(self, "bang_dd", None): return
+            canvas.yview_scroll(int(-1 if e.num == 4 else 1), "units")
+        def _enter(e):
+            canvas.bind_all("<MouseWheel>", _wheel)
+            canvas.bind_all("<Button-4>",   _lin)
+            canvas.bind_all("<Button-5>",   _lin)
+        def _leave(e):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+        canvas.bind("<Enter>", _enter)
+        canvas.bind("<Leave>", _leave)
 
-        khung_phai.bind("<Configure>",
-                         lambda e: canvas_phai.configure(scrollregion=canvas_phai.bbox("all")))
-        canvas_phai.bind("<Configure>",
-                          lambda e: canvas_phai.itemconfig(cua_so_phai, width=e.width))
-
-        def _cuon_phai(e):
-            if getattr(e, "widget", None) is getattr(self, "bang_dd", None):
-                return
-            canvas_phai.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        def _cuon_phai_lin(e):
-            if getattr(e, "widget", None) is getattr(self, "bang_dd", None):
-                return
-            canvas_phai.yview_scroll(int(-1 if e.num == 4 else 1), "units")
-        def _g_phai(e):
-            canvas_phai.bind_all("<MouseWheel>", _cuon_phai)
-            canvas_phai.bind_all("<Button-4>", _cuon_phai_lin)
-            canvas_phai.bind_all("<Button-5>", _cuon_phai_lin)
-        def _b_phai(e):
-            canvas_phai.unbind_all("<MouseWheel>")
-            canvas_phai.unbind_all("<Button-4>")
-            canvas_phai.unbind_all("<Button-5>")
-
-        canvas_phai.bind("<Enter>", _g_phai)
-        canvas_phai.bind("<Leave>", _b_phai)
-
-        header_phai = tk.Frame(khung_phai, bg=self.NEN2)
-        header_phai.pack(fill="x", padx=15, pady=(15, 4))
-        tk.Label(header_phai, text="📋  QUẢN LÝ SĨ SỐ LỚP",
+        header = tk.Frame(khung, bg=self.NEN2)
+        header.pack(fill="x", padx=15, pady=(15, 4))
+        tk.Label(header, text="📋  QUẢN LÝ SĨ SỐ LỚP",
                  bg=self.NEN2, fg=self.TIM,
                  font=("Segoe UI", 11, "bold")).pack(side="left")
-        self.nhan_tom_tat = tk.Label(header_phai, text="",
-                                      bg=self.NEN2, fg=self.CHU_MO,
+        self.nhan_tom_tat = tk.Label(header, text="", bg=self.NEN2, fg=self.CHU_MO,
                                       font=("Segoe UI", 9))
         self.nhan_tom_tat.pack(side="right")
 
-        # ── Chọn Tuần ──
-        khung_tuan = tk.Frame(khung_phai, bg=self.NEN3)
+        # Chọn tuần
+        khung_tuan = tk.Frame(khung, bg=self.NEN3)
         khung_tuan.pack(fill="x", padx=15, pady=(6, 6))
-
-        tk.Label(khung_tuan, text="📅  Tuần:",
-                 bg=self.NEN3, fg=self.CHU,
+        tk.Label(khung_tuan, text="📅  Tuần:", bg=self.NEN3, fg=self.CHU,
                  font=("Segoe UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=8)
 
         self.bien_tuan = tk.StringVar(value="Tuần 1")
         ds_tuan = [f"Tuần {t}" for t in range(1, TONG_TUAN + 1)]
-        self.cbb_tuan = ttk.Combobox(khung_tuan,
-                                       textvariable=self.bien_tuan,
-                                       values=ds_tuan,
-                                       state="readonly",
-                                       width=12,
-                                       font=("Segoe UI", 10))
+        self.cbb_tuan = ttk.Combobox(khung_tuan, textvariable=self.bien_tuan,
+                                      values=ds_tuan, state="readonly",
+                                      width=12, font=("Segoe UI", 10))
         self.cbb_tuan.pack(side="left", pady=8)
         self.cbb_tuan.bind("<<ComboboxSelected>>", self._khi_doi_tuan)
 
@@ -674,225 +1110,241 @@ class UngDungQuanLy:
         self.nhan_hk.pack(side="left", padx=8)
 
         self._tao_nut(khung_tuan, "◀", self._tuan_truoc,
-                      self.NEN2, self.NEN2).pack(side="right", padx=(2, 2), pady=8)
+                      self.NEN2, self.NEN2).pack(side="right", padx=2, pady=8)
         self._tao_nut(khung_tuan, "▶", self._tuan_sau,
                       self.NEN2, self.NEN2).pack(side="right", padx=(0, 6), pady=8)
 
-        tk.Label(khung_phai, text="1 click: xem chi tiết · 2 click: đổi trạng thái",
+        tk.Label(khung, text="1 click: xem · 2 click: đổi trạng thái · Ctrl+Z: undo",
                  bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 8, "italic")).pack(anchor="w", padx=15, pady=(0, 4))
 
-        chu_thich = tk.Frame(khung_phai, bg=self.NEN2)
+        chu_thich = tk.Frame(khung, bg=self.NEN2)
         chu_thich.pack(fill="x", padx=15, pady=(0, 6))
-        for ky_hieu, mau, label in [("✓", self.XANH_LA, "Có mặt"),
-                                     ("✗", self.VANG, "Có phép"),
-                                     ("⊘", self.DO, "Không phép"),
-                                     ("!", self.CAM, "Có lỗi")]:
-            tk.Label(chu_thich, text=f"{ky_hieu} {label}",
-                     bg=self.NEN2, fg=mau,
+        for ky, mau, label in [("✓", self.XANH_LA, "Có mặt"),
+                                ("✗", self.VANG,    "Có phép"),
+                                ("⊘", self.DO,      "Không phép"),
+                                ("!", self.CAM,     "Có lỗi")]:
+            tk.Label(chu_thich, text=f"{ky} {label}", bg=self.NEN2, fg=mau,
                      font=("Segoe UI", 8)).pack(side="left", padx=(0, 10))
 
-        khung_bang_dd = tk.Frame(khung_phai, bg=self.NEN2)
-        khung_bang_dd.pack(fill="x", padx=10, pady=(0, 6))
+        khung_dd = tk.Frame(khung, bg=self.NEN2)
+        khung_dd.pack(fill="x", padx=10, pady=(0, 6))
 
-        self.bang_dd = ttk.Treeview(khung_bang_dd,
-                                     columns=COT_DIEMDANH,
-                                     show="headings",
-                                     selectmode="extended",
-                                     height=12)
-        self.bang_dd.heading("ten", text="Học sinh")
+        self.bang_dd = ttk.Treeview(khung_dd, columns=COT_DIEMDANH,
+                                     show="headings", selectmode="extended", height=12)
+        self.bang_dd.heading(COT_TEN, text="Học sinh")
         for d in THU:
             self.bang_dd.heading(d, text=d)
-        self.bang_dd.column("ten", width=190, anchor="w", stretch=True)
+        self.bang_dd.column(COT_TEN, width=190, anchor="w", stretch=True)
         for d in THU:
             self.bang_dd.column(d, width=34, anchor="center", stretch=False)
 
-        cuon_dd = ttk.Scrollbar(khung_bang_dd, orient="vertical", command=self.bang_dd.yview)
-        self.bang_dd.configure(yscrollcommand=cuon_dd.set)
+        # Tag highlight
+        self.bang_dd.tag_configure("focus", background=self.NEN3)
+
+        scroll_dd = ttk.Scrollbar(khung_dd, orient="vertical", command=self.bang_dd.yview)
+        self.bang_dd.configure(yscrollcommand=scroll_dd.set)
         self.bang_dd.pack(side="left", fill="both", expand=True)
-        cuon_dd.pack(side="right", fill="y")
+        scroll_dd.pack(side="right", fill="y")
 
-        self.bang_dd.bind("<Button-1>", self.click_diem_danh)
+        self.bang_dd.bind("<Button-1>",        self.click_diem_danh)
         self.bang_dd.bind("<Double-Button-1>", self.double_click_diem_danh)
-        self.bang_dd.bind("<Motion>", self.di_chuot_diem_danh)
+        self.bang_dd.bind("<Motion>",          self.di_chuot_diem_danh)
 
-        # ── Panel Chi Tiết ──
-        khung_chi_tiet = tk.Frame(khung_phai, bg=self.NEN3)
-        khung_chi_tiet.pack(fill="x", padx=10, pady=(0, 8))
+        # Panel chi tiết
+        khung_ct = tk.Frame(khung, bg=self.NEN3)
+        khung_ct.pack(fill="x", padx=10, pady=(0, 8))
 
-        self.tieu_de_ct = tk.Label(khung_chi_tiet,
+        self.tieu_de_ct = tk.Label(khung_ct,
                                     text="1 click vào ô để xem chi tiết...",
                                     bg=self.NEN3, fg=self.CHU_MO,
                                     font=("Segoe UI", 9, "italic"),
                                     anchor="w", wraplength=420)
         self.tieu_de_ct.pack(fill="x", padx=12, pady=(10, 4))
 
-        tk.Label(khung_chi_tiet, text="① Lý do nghỉ:",
-                 bg=self.NEN3, fg=self.CHU,
-                 font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(4, 2))
+        tk.Label(khung_ct, text="① Lý do nghỉ:", bg=self.NEN3, fg=self.CHU,
+                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=12, pady=(4, 2))
 
         self.bien_ly_do = tk.StringVar()
-        self.o_ly_do = tk.Entry(khung_chi_tiet, textvariable=self.bien_ly_do,
+        self.o_ly_do = tk.Entry(khung_ct, textvariable=self.bien_ly_do,
                                  bg=self.NEN2, fg=self.CHU,
-                                 insertbackground=self.CHU,
-                                 relief="flat", font=("Segoe UI", 10),
+                                 insertbackground=self.CHU, relief="flat",
+                                 font=("Segoe UI", 10),
                                  disabledbackground=self.NEN,
                                  disabledforeground=self.CHU_MO)
         self.o_ly_do.pack(fill="x", padx=12, ipady=4)
         self.o_ly_do.bind("<Return>", lambda e: self.luu_ly_do())
 
-        hang1 = tk.Frame(khung_chi_tiet, bg=self.NEN3)
+        hang1 = tk.Frame(khung_ct, bg=self.NEN3)
         hang1.pack(fill="x", padx=12, pady=(6, 8))
         self._tao_nut(hang1, "💾 Lưu lý do", self.luu_ly_do,
-                      self.XANH_LA, "#94e2d5").pack(side="left", expand=True, fill="x", padx=(0, 3))
+                      self.XANH_LA, "#94e2d5"
+                      ).pack(side="left", expand=True, fill="x", padx=(0, 3))
         self._tao_nut(hang1, "🚫 Không phép", self.danh_dau_khong_phep,
-                      self.DO, "#eb6f92").pack(side="left", expand=True, fill="x", padx=(3, 0))
+                      self.DO, "#eb6f92"
+                      ).pack(side="left", expand=True, fill="x", padx=(3, 0))
 
-        tk.Frame(khung_chi_tiet, bg=self.NEN2, height=1).pack(fill="x", padx=12, pady=(0, 6))
+        tk.Frame(khung_ct, bg=self.NEN2, height=1).pack(fill="x", padx=12, pady=(0, 6))
 
-        tk.Label(khung_chi_tiet, text="② Lỗi vi phạm:",
-                 bg=self.NEN3, fg=self.CAM,
-                 font=("Segoe UI", 9, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(0, 2))
+        tk.Label(khung_ct, text="② Lỗi vi phạm:", bg=self.NEN3, fg=self.CAM,
+                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=12, pady=(0, 2))
 
-        khung_loi = tk.Frame(khung_chi_tiet, bg=self.NEN3)
+        khung_loi = tk.Frame(khung_ct, bg=self.NEN3)
         khung_loi.pack(fill="x", padx=12, pady=(0, 4))
 
         self.cuon_loi = ttk.Scrollbar(khung_loi, orient="vertical")
         self.cuon_loi.pack(side="right", fill="y")
 
-        self.o_loi = tk.Text(khung_loi,
-                              height=3,
+        self.o_loi = tk.Text(khung_loi, height=3,
                               bg=self.NEN2, fg=self.CHU,
-                              insertbackground=self.CHU,
-                              relief="flat",
-                              font=("Segoe UI", 10),
-                              wrap="word",
+                              insertbackground=self.CHU, relief="flat",
+                              font=("Segoe UI", 10), wrap="word",
                               yscrollcommand=self.cuon_loi.set,
                               padx=6, pady=4)
         self.o_loi.pack(side="left", fill="x", expand=True)
         self.cuon_loi.config(command=self.o_loi.yview)
         self.o_loi.bind("<Control-Return>", lambda e: (self.luu_loi(), "break"))
 
-        hang2 = tk.Frame(khung_chi_tiet, bg=self.NEN3)
+        hang2 = tk.Frame(khung_ct, bg=self.NEN3)
         hang2.pack(fill="x", padx=12, pady=(4, 10))
         self._tao_nut(hang2, "💾 Lưu lỗi (Ctrl+Enter)", self.luu_loi,
-                      self.CAM, "#f5a76c").pack(side="left", expand=True, fill="x", padx=(0, 3))
+                      self.CAM, "#f5a76c"
+                      ).pack(side="left", expand=True, fill="x", padx=(0, 3))
         self._tao_nut(hang2, "🗑 Xóa lỗi", self.xoa_loi,
-                      self.NEN2, self.NEN2).pack(side="left", expand=True, fill="x", padx=(3, 0))
+                      self.NEN2, self.NEN2
+                      ).pack(side="left", expand=True, fill="x", padx=(3, 0))
 
-        # ── Nút hàng loạt ──
-        hang_loat = tk.Frame(khung_phai, bg=self.NEN2, height=44)
+        # Bulk
+        hang_loat = tk.Frame(khung, bg=self.NEN2, height=44)
         hang_loat.pack(fill="x", padx=10, pady=(6, 15))
         hang_loat.pack_propagate(False)
         self._tao_nut(hang_loat, "✓ Tất cả có mặt", self.danh_dau_tat_ca,
-                      self.XANH_LA, "#94e2d5").pack(side="left", padx=2, expand=True, fill="both")
+                      self.XANH_LA, "#94e2d5"
+                      ).pack(side="left", padx=2, expand=True, fill="both")
         self._tao_nut(hang_loat, "✗ Bỏ hết", self.bo_danh_dau_tat_ca,
-                      self.VANG, "#f5c97a").pack(side="left", padx=2, expand=True, fill="both")
-
-        # ── Status bar ──
-        self.thanh_trang_thai = tk.Label(self.root, text="Sẵn sàng",
-                                          bg=self.NEN2, fg=self.CHU_MO,
-                                          font=("Segoe UI", 9), anchor="w", padx=15)
-        self.thanh_trang_thai.pack(fill="x", side="bottom", ipady=6)
-
-        self.khoa_sap_xep = "ma"
-        self.dao_sap_xep = False
+                      self.VANG, "#f5c97a"
+                      ).pack(side="left", padx=2, expand=True, fill="both")
 
     def _tao_o(self, parent, label):
-        tk.Label(parent, text=label,
-                 bg=self.NEN2, fg=self.CHU_MO,
+        tk.Label(parent, text=label, bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(6, 2))
-        e = tk.Entry(parent,
-                     bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
+        e = tk.Entry(parent, bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
                      relief="flat", font=("Segoe UI", 11))
         e.pack(fill="x", padx=20, ipady=6)
         return e
 
     def _tao_nut(self, parent, text, cmd, bg, hover):
+        fg = "#1e1e2e" if bg not in (self.NEN3, self.NEN2) else self.CHU
         b = tk.Button(parent, text=text, command=cmd,
-                      bg=bg, fg="#1e1e2e" if bg not in (self.NEN3, self.NEN2) else self.CHU,
-                      activebackground=hover,
-                      activeforeground="#1e1e2e" if bg not in (self.NEN3, self.NEN2) else self.CHU,
+                      bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
                       relief="flat", cursor="hand2",
                       font=("Segoe UI", 10, "bold"), bd=0)
         b.bind("<Enter>", lambda e: b.configure(bg=hover))
         b.bind("<Leave>", lambda e: b.configure(bg=bg))
         return b
 
-    # ═══════════════════════════════════════════════════════════
-    # GITHUB ACTIONS
-    # ═══════════════════════════════════════════════════════════
-    def keo_github(self):
-        """Nút Tải từ GitHub — fetch data mới, hỏi trước khi ghi đè."""
-        global GH_CONFIG
-        if not GH_CONFIG:
-            self.thong_bao("⚠ Chưa có github_config.json", self.VANG)
-            return
+    # ═══ Undo/Redo ═══
+    def _snapshot(self, label):
+        snap = deepcopy(self.HocSinh)
+        self.undo_stack.push(snap, label)
+        self._dirty = True
 
-        if HocSinh:
-            ok = messagebox.askyesno(
-                "Xác nhận tải",
-                "Tải data mới từ GitHub sẽ GHI ĐÈ data hiện tại.\n"
-                "Mọi thay đổi chưa Save sẽ MẤT.\n\n"
-                "Tiếp tục?")
-            if not ok:
-                return
-
-        self.thong_bao("☁ Đang tải từ GitHub...", self.XANH_DUONG)
-        self.root.update()
-
-        content = github_fetch(GH_CONFIG)
-        if not content:
-            self.thong_bao("✗ Không tải được từ GitHub", self.DO)
-            return
-
-        # Xóa data cũ + parse mới
-        HocSinh.clear()
-        try:
-            raw = json.loads(content)
-        except Exception as e:
-            self.thong_bao(f"✗ Data GitHub hỏng: {e}", self.DO)
-            return
-
-        for sid_str, info in raw.items():
-            sid = int(sid_str)
-            if "weeks" not in info:
-                info["weeks"] = tao_du_lieu_tat_ca_tuan()
-                info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
-                info["weeks"][1]["reasons"]    = info.get("reasons", ly_do_moi())
-                info["weeks"][1]["errors"]     = info.get("errors", loi_moi())
-                for k in ("attendance", "reasons", "errors"):
-                    info.pop(k, None)
-            for t in range(1, TONG_TUAN + 1):
-                if t not in info["weeks"]:
-                    info["weeks"][t] = tuan_moi()
-                else:
-                    info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
-            HocSinh[sid] = info
-
-        # Lưu local luôn
-        try:
-            with open(TEN_FILE, "w", encoding="utf-8") as f:
-                f.write(content)
-        except Exception:
-            pass
-
+    def undo(self):
+        if not self.undo_stack.can_undo():
+            self.thong_bao("Không có gì để undo", self.CHU_MO); return
+        cur_snap = deepcopy(self.HocSinh)
+        snap, label, _ = self.undo_stack.do_undo()
+        self.undo_stack.push_redo(cur_snap, label)
+        self.HocSinh = snap
+        self._xoa_panel_ct()
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
-        self._xoa_panel_ct()
-        self.thong_bao(f"✓ Đã tải {len(HocSinh)} HS từ GitHub", self.XANH_LA)
+        self.thong_bao(f"↩ Undo: {label}", self.VANG)
 
-    # ═══════════════════════════════════════════════════════════
-    # TUẦN
-    # ═══════════════════════════════════════════════════════════
+    def redo(self):
+        if not self.undo_stack.can_redo():
+            self.thong_bao("Không có gì để redo", self.CHU_MO); return
+        cur_snap = deepcopy(self.HocSinh)
+        snap, label, _ = self.undo_stack.do_redo()
+        self.undo_stack.push(cur_snap, label)
+        self.HocSinh = snap
+        self._xoa_panel_ct()
+        self.cap_nhat_bang()
+        self.cap_nhat_diem_danh()
+        self.thong_bao(f"↪ Redo: {label}", self.XANH_LA)
+
+    # ═══ GitHub Actions ═══
+    def keo_github(self):
+        global GH_CONFIG
+        if not GH_CONFIG:
+            self.thong_bao("⚠ Chưa có github_config.json", self.VANG); return
+
+        if self.HocSinh:
+            ok = messagebox.askyesno(
+                "Xác nhận",
+                "Tải data mới từ GitHub sẽ GHI ĐÈ data hiện tại.\n"
+                "Mọi thay đổi chưa Save sẽ MẤT.\n\nTiếp tục?")
+            if not ok: return
+
+        self.thong_bao("☁ Đang tải từ GitHub...", self.XANH_DUONG)
+
+        def task():
+            return github_fetch(GH_CONFIG)
+
+        def on_done(content):
+            if not content:
+                self.thong_bao("✗ Không tải được từ GitHub", self.DO); return
+            try:
+                raw = json.loads(content)
+            except Exception as e:
+                self.thong_bao(f"✗ Data GitHub hỏng: {e}", self.DO); return
+
+            # Backup trước khi ghi đè
+            _backup_file(DATA_FILE, keep=self.settings["backup_count"])
+
+            self._snapshot("Pull GitHub")
+            self.HocSinh.clear()
+
+            for sid_str, info in raw.items():
+                if sid_str == "_meta":
+                    continue
+                try: sid = int(sid_str)
+                except ValueError: continue
+                if "weeks" not in info:
+                    info["weeks"] = tao_du_lieu_tat_ca_tuan()
+                    info["weeks"][1]["attendance"] = info.get("attendance", diem_danh_moi())
+                    info["weeks"][1]["reasons"]    = info.get("reasons",    ly_do_moi())
+                    info["weeks"][1]["errors"]     = info.get("errors",     loi_moi())
+                    for k in ("attendance", "reasons", "errors"):
+                        info.pop(k, None)
+                for t in range(1, TONG_TUAN + 1):
+                    if t not in info["weeks"]:
+                        info["weeks"][t] = tuan_moi()
+                    else:
+                        info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+                if not validate_hs_info(info):
+                    info["name"]  = str(info.get("name",  ""))
+                    info["class"] = str(info.get("class", ""))
+                self.HocSinh[sid] = info
+
+            try:
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    f.write(content)
+            except Exception:
+                pass
+
+            self.cap_nhat_bang()
+            self.cap_nhat_diem_danh()
+            self._xoa_panel_ct()
+            self.thong_bao(f"✓ Đã tải {len(self.HocSinh)} HS từ GitHub", self.XANH_LA)
+
+        self._async(task, on_success=on_done)
+
+    # ═══ Tuần ═══
     def _khi_doi_tuan(self, event=None):
         s = self.bien_tuan.get()
-        try:
-            t = int(s.split()[1])
-        except Exception:
-            return
+        try: t = int(s.split()[1])
+        except Exception: return
         self.tuan_hien_tai = t
         self.nhan_hk.config(text=ten_hoc_ky(t))
         self.o_hien_tai = None
@@ -911,7 +1363,7 @@ class UngDungQuanLy:
         self._khi_doi_tuan()
 
     def _du_lieu_tuan(self, ma, tuan=None):
-        d = HocSinh.get(ma)
+        d = self.HocSinh.get(ma)
         if not d: return None
         t = tuan if tuan is not None else self.tuan_hien_tai
         weeks = d.setdefault("weeks", tao_du_lieu_tat_ca_tuan())
@@ -921,22 +1373,27 @@ class UngDungQuanLy:
             weeks[t] = _chuan_hoa_tuan(weeks[t])
         return weeks[t]
 
-    # ────── Thao tác học sinh ──────
+    def _tuan_co_the_sua(self, tuan=None):
+        t = tuan if tuan is not None else self.tuan_hien_tai
+        return t <= self.settings["max_editable_week"]
+
+    # ═══ HS CRUD ═══
     def them_hoc_sinh(self):
         ma_str = self.o_ma.get().strip()
         ten    = self.o_ten.get().strip()
         lop    = self.o_lop.get().strip()
         if not ma_str or not ten or not lop:
-            self.thong_bao("⚠ Vui lòng nhập đầy đủ Mã, Họ tên và Lớp", self.VANG); return
-        try:
-            ma = int(ma_str)
+            self.thong_bao("⚠ Nhập đầy đủ Mã, Tên, Lớp", self.VANG); return
+        try: ma = int(ma_str)
         except ValueError:
-            self.thong_bao("⚠ Mã học sinh phải là số nguyên", self.DO)
+            self.thong_bao("⚠ Mã phải là số nguyên", self.DO)
             self.o_ma.focus_set(); return
-        if ma in HocSinh:
+        if ma in self.HocSinh:
             self.thong_bao(f"⚠ Mã {ma} đã tồn tại", self.DO)
             self.o_ma.focus_set(); return
-        HocSinh[ma] = {
+
+        self._snapshot(f"Thêm HS {ma}")
+        self.HocSinh[ma] = {
             "name": ten, "class": lop,
             "weeks": tao_du_lieu_tat_ca_tuan(),
         }
@@ -948,37 +1405,71 @@ class UngDungQuanLy:
     def xoa_da_chon(self):
         sel = self.bang.selection()
         if not sel:
-            self.thong_bao("⚠ Chưa chọn học sinh nào để xóa", self.VANG); return
+            self.thong_bao("⚠ Chưa chọn HS nào", self.VANG); return
         ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel]
-        ds_ten = [HocSinh[s]["name"] for s in ds_ma if s in HocSinh]
+        ds_ten = [self.HocSinh[s]["name"] for s in ds_ma if s in self.HocSinh]
         if not messagebox.askyesno("Xác nhận xóa",
             f"Xóa {len(ds_ma)} học sinh?\n\n" + "\n".join(f"• {n}" for n in ds_ten)):
             return
-        for ma in ds_ma: HocSinh.pop(ma, None)
-        self.cap_nhat_bang(); self.cap_nhat_diem_danh(); self._xoa_panel_ct()
-        self.thong_bao(f"✓ Đã xóa {len(ds_ma)} học sinh", self.XANH_LA)
+        self._snapshot(f"Xóa {len(ds_ma)} HS")
+        for ma in ds_ma: self.HocSinh.pop(ma, None)
+        self.cap_nhat_bang()
+        self.cap_nhat_diem_danh()
+        self._xoa_panel_ct()
+        self.thong_bao(f"✓ Đã xóa {len(ds_ma)} HS (Ctrl+Z để hoàn tác)", self.XANH_LA)
 
     def luu_ngay(self):
-        """Nút Lưu ngay — lưu local + push GitHub."""
-        if GH_CONFIG:
-            self.thong_bao("💾 Đang lưu local + push GitHub...", self.XANH_DUONG)
-            self.root.update()
-            ok = ghi_file()
-            if ok:
-                self.thong_bao(f"✓ Đã lưu {len(HocSinh)} HS lên GitHub", self.XANH_LA)
+        if self._saving:
+            self.thong_bao("⏳ Đang lưu...", self.VANG)
+            return
+        self._saving = True
+        self.thong_bao("💾 Đang pull → merge → push...", self.XANH_DUONG)
+
+        # Snapshot để thread dùng (tránh race condition)
+        local_snapshot = deepcopy(self.HocSinh)
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+
+        def task():
+            return ghi_file(local_snapshot, ly_do_md, DATA_FILE)
+
+        def on_done(res):
+            ok_local, ok_gh, err, merged = res
+            self._saving = False
+            self._dirty = False
+
+            # Update UI với bản merged (nếu có)
+            if merged is not None:
+                self.HocSinh.clear()
+                for k, v in merged.items():
+                    self.HocSinh[k] = v
+                self.cap_nhat_bang()
+                self.cap_nhat_diem_danh()
+                log_info(f"UI refresh với {len(self.HocSinh)} HS sau merge")
+
+            n = len(self.HocSinh)
+            if ok_local and ok_gh:
+                self.thong_bao(f"✓ Pull-merge-push {n} HS lên GitHub", self.XANH_LA)
+            elif ok_local:
+                msg = f"✓ Local OK ({n} HS)"
+                if GH_CONFIG:
+                    msg += f" · ⚠ GitHub: {err or 'fail'}"
+                self.thong_bao(msg, self.VANG)
             else:
-                self.thong_bao("⚠ Đã lưu local, push GitHub thất bại", self.VANG)
-        else:
-            try:
-                ghi_file()
-                self.thong_bao(f"✓ Đã lưu {len(HocSinh)} HS vào '{TEN_FILE}'", self.XANH_LA)
-            except Exception as e:
-                self.thong_bao(f"✗ Lỗi lưu: {e}", self.DO)
+                self.thong_bao("✗ Lỗi lưu — xem app.log", self.DO)
+
+        def on_err(e):
+            self._saving = False
+            self.thong_bao(f"✗ Lỗi: {e}", self.DO)
+
+        self._async(task, on_success=on_done, on_error=on_err)
 
     def xoa_form(self):
         self.o_ma.delete(0, "end")
         self.o_ten.delete(0, "end")
         self.o_lop.delete(0, "end")
+        # Clear selection bảng
+        try: self.bang.selection_remove(self.bang.selection())
+        except Exception: pass
         self.o_ma.focus_set()
 
     def tai_vao_form(self, event):
@@ -988,137 +1479,117 @@ class UngDungQuanLy:
         self.o_ma.delete(0, "end");  self.o_ma.insert(0, vals[0])
         self.o_ten.delete(0, "end"); self.o_ten.insert(0, vals[1])
         self.o_lop.delete(0, "end"); self.o_lop.insert(0, vals[2])
-        self.thong_bao(f"Đã tải mã {vals[0]} vào form.", self.CHU_MO)
+        self.thong_bao(f"Đã tải mã {vals[0]} vào form", self.CHU_MO)
 
-    # ═══════════════════════════════════════════════════════════
-    # TÌM KIẾM
-    # ═══════════════════════════════════════════════════════════
+    # ═══ Tìm kiếm ═══
+    def _schedule_filter(self):
+        if self._debounce_job:
+            self.root.after_cancel(self._debounce_job)
+        ms = self.settings["filter_debounce_ms"]
+        self._debounce_job = self.root.after(ms, self._apply_filter)
+
+    def _apply_filter(self):
+        self._debounce_job = None
+        self.cap_nhat_bang()
+
     def _thoa_filter(self, ma, d):
         q = self.bien_tim_kiem.get().strip().lower()
         if q:
             if not (q in str(ma).lower()
-                    or q in d["name"].lower()
-                    or q in d["class"].lower()):
+                    or q in str(d["name"]).lower()
+                    or q in str(d["class"]).lower()):
                 return False
         if self.bien_tim_ma is not None:
             m = self.bien_tim_ma.get().strip()
-            if m and m not in str(ma):
-                return False
+            if m and m not in str(ma): return False
         if self.bien_tim_ten is not None:
             t = self.bien_tim_ten.get().strip().lower()
-            if t and t not in d["name"].lower():
-                return False
+            if t and t not in str(d["name"]).lower(): return False
+        if self.bien_tim_lop is not None:
+            l = self.bien_tim_lop.get().strip().lower()
+            if l and l not in str(d["class"]).lower(): return False
         return True
 
     def _co_filter(self):
-        if self.bien_tim_kiem.get().strip(): return True
-        if self.bien_tim_ma is not None and self.bien_tim_ma.get().strip(): return True
-        if self.bien_tim_ten is not None and self.bien_tim_ten.get().strip(): return True
-        return False
+        return bool(
+            self.bien_tim_kiem.get().strip()
+            or (self.bien_tim_ma  and self.bien_tim_ma.get().strip())
+            or (self.bien_tim_ten and self.bien_tim_ten.get().strip())
+            or (self.bien_tim_lop and self.bien_tim_lop.get().strip())
+        )
 
     def tim_kiem(self):
-        self.cap_nhat_bang()
-
-        ds_khop = []
-        for ma, d in HocSinh.items():
-            if self._thoa_filter(ma, d):
-                ds_khop.append(ma)
+        self._apply_filter()
+        ds_khop = [ma for ma, d in self.HocSinh.items() if self._thoa_filter(ma, d)]
 
         if not ds_khop:
-            self.thong_bao("⚠ Không tìm thấy học sinh nào khớp", self.VANG)
-            try:
-                self.bang.selection_remove(self.bang.selection())
-            except Exception:
-                pass
-            try:
-                self.bang_dd.selection_remove(self.bang_dd.selection())
-            except Exception:
-                pass
+            self.thong_bao("⚠ Không tìm thấy HS nào khớp", self.VANG)
+            try: self.bang.selection_remove(self.bang.selection())
+            except Exception: pass
+            try: self.bang_dd.selection_remove(self.bang_dd.selection())
+            except Exception: pass
             self.cap_nhat_diem_danh()
             return
 
-        ds_iid = [str(ma) for ma in ds_khop]
-
-        # Select bảng danh sách
+        iids = [str(ma) for ma in ds_khop]
+        try: self.bang.selection_set(iids)
+        except Exception: pass
+        first = ds_khop[0]
         try:
-            self.bang.selection_set(ds_iid)
-        except Exception:
-            pass
+            self.bang.see(str(first)); self.bang.focus(str(first))
+        except Exception: pass
 
-        first_ma = ds_khop[0]
-        try:
-            self.bang.see(str(first_ma))
-            self.bang.focus(str(first_ma))
-        except Exception:
-            pass
-
-        # Refresh bảng điểm danh
         self.cap_nhat_diem_danh()
 
-        # Select bảng điểm danh (SAU khi refresh)
+        try: self.bang_dd.selection_set(iids)
+        except Exception: pass
         try:
-            self.bang_dd.selection_set(ds_iid)
-        except Exception:
-            pass
+            self.bang_dd.see(str(first)); self.bang_dd.focus(str(first))
+        except Exception: pass
 
-        try:
-            self.bang_dd.see(str(first_ma))
-            self.bang_dd.focus(str(first_ma))
-        except Exception:
-            pass
-
-        # Panel chi tiết
         if len(ds_khop) == 1:
-            d = HocSinh[first_ma]
+            d = self.HocSinh[first]
             self.tieu_de_ct.config(
-                text=f"👁 Đã chọn: {d['name']} ({d['class']}) — Mã {first_ma}. Click vào ô để xem chi tiết.",
+                text=f"👁 Đã chọn: {d['name']} ({d['class']}) — Mã {first}",
                 fg=self.XANH_DUONG, font=("Segoe UI", 10, "bold"))
         else:
             self.tieu_de_ct.config(
-                text=f"👁 Tìm thấy {len(ds_khop)} học sinh. Đã chọn tất cả.",
+                text=f"👁 Tìm thấy {len(ds_khop)} HS. Đã chọn tất cả.",
                 fg=self.XANH_DUONG, font=("Segoe UI", 10, "bold"))
 
         if len(ds_khop) == 1:
-            self.thong_bao(f"✓ Đã chọn: {HocSinh[first_ma]['name']}", self.XANH_LA)
+            self.thong_bao(f"✓ Đã chọn: {self.HocSinh[first]['name']}", self.XANH_LA)
         else:
-            self.thong_bao(f"✓ Đã chọn {len(ds_khop)} học sinh ở cả 2 bảng", self.XANH_LA)
+            self.thong_bao(f"✓ Đã chọn {len(ds_khop)} HS ở cả 2 bảng", self.XANH_LA)
 
     def xoa_loc(self):
         self.bien_tim_kiem.set("")
-        if self.bien_tim_ma is not None:
-            self.bien_tim_ma.set("")
-        if self.bien_tim_ten is not None:
-            self.bien_tim_ten.set("")
+        if self.bien_tim_ma:  self.bien_tim_ma.set("")
+        if self.bien_tim_ten: self.bien_tim_ten.set("")
+        if self.bien_tim_lop: self.bien_tim_lop.set("")
         self.cap_nhat_bang()
         self.thong_bao("Đã xóa filter", self.CHU_MO)
 
-    # ═══════════════════════════════════════════════════════════
-    # BẢNG HỌC SINH
-    # ═══════════════════════════════════════════════════════════
+    # ═══ Bảng HS ═══
     def cap_nhat_bang(self):
         for item in self.bang.get_children(): self.bang.delete(item)
-
-        rows = []
-        for ma, d in HocSinh.items():
-            if not self._thoa_filter(ma, d):
-                continue
-            rows.append((ma, d["name"], d["class"]))
-
+        rows = [(ma, d["name"], d["class"])
+                for ma, d in self.HocSinh.items() if self._thoa_filter(ma, d)]
         key = self.khoa_sap_xep
-        if key == "ma": rows.sort(key=lambda r: r[0], reverse=self.dao_sap_xep)
+        if key == "ma":  rows.sort(key=lambda r: r[0],          reverse=self.dao_sap_xep)
         elif key == "ten": rows.sort(key=lambda r: r[1].lower(), reverse=self.dao_sap_xep)
-        else: rows.sort(key=lambda r: r[2].lower(), reverse=self.dao_sap_xep)
+        else:              rows.sort(key=lambda r: r[2].lower(), reverse=self.dao_sap_xep)
 
         for i, (ma, ten, lop) in enumerate(rows):
             tag = "le" if i % 2 else "chan"
-            self.bang.insert("", "end", iid=str(ma), values=(ma, ten, lop), tags=(tag,))
+            self.bang.insert("", "end", iid=str(ma),
+                             values=(ma, ten, lop), tags=(tag,))
 
-        self.nhan_tong.config(text=f"Tổng: {len(HocSinh)}")
-
+        self.nhan_tong.config(text=f"Tổng: {len(self.HocSinh)}")
         if self.nhan_ket_qua is not None:
             if self._co_filter():
                 self.nhan_ket_qua.config(
-                    text=f"Tìm thấy: {len(rows)}/{len(HocSinh)} học sinh",
+                    text=f"Tìm thấy: {len(rows)}/{len(self.HocSinh)} HS",
                     fg=self.XANH_LA)
             else:
                 self.nhan_ket_qua.config(text="")
@@ -1128,9 +1599,12 @@ class UngDungQuanLy:
             self.dao_sap_xep = not self.dao_sap_xep
         else:
             self.khoa_sap_xep = key; self.dao_sap_xep = False
+        self.settings["sort_key"]  = self.khoa_sap_xep
+        self.settings["sort_desc"] = self.dao_sap_xep
+        save_settings(self.settings)
         self.cap_nhat_bang()
 
-    # ────── Ký hiệu ô ──────
+    # ═══ Ký hiệu ═══
     def _ky_hieu_o(self, ma, day):
         w = self._du_lieu_tuan(ma)
         if not w: return ""
@@ -1138,67 +1612,65 @@ class UngDungQuanLy:
             base = "✓"
         else:
             reason = w["reasons"].get(day, "").strip()
-            base = "✗" if (reason and reason != LY_DO_MAC_DINH) else "⊘"
+            base = "✗" if (reason and reason != self.settings["ly_do_mac_dinh"]) else "⊘"
         err = w["errors"].get(day, "").strip()
         return f"{base}!" if err else base
 
     def cap_nhat_diem_danh(self):
         for item in self.bang_dd.get_children(): self.bang_dd.delete(item)
-        ds_ma = sorted(HocSinh.keys(), key=lambda s: HocSinh[s]["name"].lower())
+        ds_ma = sorted(self.HocSinh.keys(),
+                       key=lambda s: self.HocSinh[s]["name"].lower())
         sel = self.bang.selection()
         ma_da_chon = [int(self.bang.item(i, "values")[0]) for i in sel] if sel else None
+
         for ma in ds_ma:
-            d = HocSinh[ma]
+            d = self.HocSinh[ma]
             ten_hien = d["name"]
+            tag = ()
             if ma_da_chon and ma not in ma_da_chon:
                 ten_hien = f"· {d['name']}"
+            elif ma_da_chon and ma in ma_da_chon:
+                tag = ("focus",)
             vals = [f"{ten_hien} ({d['class']})"] + [self._ky_hieu_o(ma, day) for day in THU]
-            self.bang_dd.insert("", "end", iid=str(ma), values=vals)
+            self.bang_dd.insert("", "end", iid=str(ma), values=vals, tags=tag)
+
         tong = len(ds_ma)
         if ma_da_chon:
             self.nhan_tom_tat.config(text=f"Đang xem {len(ma_da_chon)}/{tong} · Tuần {self.tuan_hien_tai}")
         else:
-            self.nhan_tom_tat.config(text=f"{tong} học sinh · Tuần {self.tuan_hien_tai}")
+            self.nhan_tom_tat.config(text=f"{tong} HS · Tuần {self.tuan_hien_tai}")
 
     def _cap_nhat_hang_dd(self, ma):
-        d = HocSinh.get(ma)
+        d = self.HocSinh.get(ma)
         if not d: return
         vals = [f"{d['name']} ({d['class']})"] + [self._ky_hieu_o(ma, day) for day in THU]
-        try:
-            self.bang_dd.item(str(ma), values=vals)
-        except Exception:
-            pass
+        try: self.bang_dd.item(str(ma), values=vals)
+        except Exception: pass
 
-    # ═══════════════════════════════════════════════════════════
-    # CLICK HANDLERS
-    # ═══════════════════════════════════════════════════════════
+    # ═══ Click handlers ═══
     def _xac_dinh_o(self, x, y):
-        region = self.bang_dd.identify("region", x, y)
-        if region != "cell": return None
+        if self.bang_dd.identify("region", x, y) != "cell": return None
         row_id = self.bang_dd.identify_row(y)
         if not row_id: return None
         col_id = self.bang_dd.identify_column(x)
         col_idx = int(col_id[1:]) - 1
         col_name = COT_DIEMDANH[col_idx]
-        if col_name == "ten": return None
+        if col_name == COT_TEN: return None
         return (int(row_id), col_name)
 
     def click_diem_danh(self, event):
         x, y = event.x, event.y
         if self.hen_gio_click:
             self.root.after_cancel(self.hen_gio_click)
-            self.hen_gio_click = None
+        ms = self.settings["click_delay_ms"]
         self.hen_gio_click = self.root.after(
-            DO_TRE_CLICK_DUP,
-            lambda: self._xu_ly_click_don(x, y)
-        )
+            ms, lambda: self._xu_ly_click_don(x, y))
 
     def _xu_ly_click_don(self, x, y):
         self.hen_gio_click = None
         cell = self._xac_dinh_o(x, y)
         if cell is None: return
-        ma, day = cell
-        self._hien_thi_panel_ct(ma, day)
+        self._hien_thi_panel_ct(*cell)
 
     def double_click_diem_danh(self, event):
         if self.hen_gio_click:
@@ -1206,28 +1678,34 @@ class UngDungQuanLy:
             self.hen_gio_click = None
         cell = self._xac_dinh_o(event.x, event.y)
         if cell is None: return
-        ma, day = cell
-        self._doi_trang_thai(ma, day)
+        self._doi_trang_thai(*cell)
 
     def _doi_trang_thai(self, ma, day):
+        if not self._tuan_co_the_sua():
+            self.thong_bao(
+                f"⚠ Tuần {self.tuan_hien_tai} đã khóa (max={self.settings['max_editable_week']})",
+                self.DO)
+            return
         w = self._du_lieu_tuan(ma)
         if not w: return
-        d = HocSinh[ma]
-        gia_tri_moi = not w["attendance"].get(day, False)
-        w["attendance"][day] = gia_tri_moi
-        if gia_tri_moi:
+        self._snapshot(f"Đổi trạng thái {ma}/{day}")
+        d = self.HocSinh[ma]
+        new_val = not w["attendance"].get(day, False)
+        w["attendance"][day] = new_val
+        if new_val:
             w["reasons"][day] = ""
             self.thong_bao(f"✓ {d['name']} — T{self.tuan_hien_tai} {day}: Có mặt", self.XANH_LA)
         else:
-            w["reasons"][day] = LY_DO_MAC_DINH
-            self.thong_bao(f"⊘ {d['name']} — T{self.tuan_hien_tai} {day}: {LY_DO_MAC_DINH}", self.DO)
+            w["reasons"][day] = self.settings["ly_do_mac_dinh"]
+            self.thong_bao(f"⊘ {d['name']} — T{self.tuan_hien_tai} {day}: "
+                            f"{self.settings['ly_do_mac_dinh']}", self.DO)
         self._cap_nhat_hang_dd(ma)
         self._hien_thi_panel_ct(ma, day)
 
     def _hien_thi_panel_ct(self, ma, day):
         w = self._du_lieu_tuan(ma)
         if not w: return
-        d = HocSinh[ma]
+        d = self.HocSinh[ma]
         self.o_hien_tai = (ma, day)
         att = w["attendance"].get(day, False)
         reason = w["reasons"].get(day, "")
@@ -1242,7 +1720,7 @@ class UngDungQuanLy:
             self.o_ly_do.config(state="disabled")
         else:
             if not reason.strip():
-                reason = LY_DO_MAC_DINH
+                reason = self.settings["ly_do_mac_dinh"]
                 w["reasons"][day] = reason
             self.tieu_de_ct.config(
                 text=f"👁 {d['name']} ({d['class']}) — {tuan_str}",
@@ -1253,65 +1731,71 @@ class UngDungQuanLy:
             self.o_ly_do.selection_range(0, "end")
 
         self.o_loi.delete("1.0", "end")
-        if err:
-            self.o_loi.insert("1.0", err)
+        if err: self.o_loi.insert("1.0", err)
 
     def di_chuot_diem_danh(self, event):
-        region = self.bang_dd.identify("region", event.x, event.y)
-        if region != "cell":
+        if self.bang_dd.identify("region", event.x, event.y) != "cell":
             self.bang_dd.config(cursor=""); return
         col_id = self.bang_dd.identify_column(event.x)
         col_idx = int(col_id[1:]) - 1
         self.bang_dd.config(cursor="" if col_idx == 0 else "hand2")
 
-    # ────── Panel chi tiết ──────
+    # ═══ Panel chi tiết ═══
     def _xoa_panel_ct(self):
         self.o_hien_tai = None
-        self.tieu_de_ct.config(
-            text="1 click vào ô để xem chi tiết...",
-            fg=self.CHU_MO, font=("Segoe UI", 9, "italic"))
+        self.tieu_de_ct.config(text="1 click vào ô để xem chi tiết...",
+                                fg=self.CHU_MO, font=("Segoe UI", 9, "italic"))
         self.bien_ly_do.set("")
         self.o_ly_do.config(state="normal")
         self.o_loi.delete("1.0", "end")
 
     def luu_ly_do(self):
         if not self.o_hien_tai:
-            self.thong_bao("⚠ Chưa chọn ô nào để ghi lý do", self.VANG); return
+            self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
         w = self._du_lieu_tuan(ma)
         if not w: return
-        d = HocSinh[ma]
+        d = self.HocSinh[ma]
         if w["attendance"].get(day, False):
             self.thong_bao("⚠ Ô này là CÓ MẶT, không cần lý do", self.VANG); return
-        text = self.bien_ly_do.get().strip()
-        if not text: text = LY_DO_MAC_DINH
+        text = self.bien_ly_do.get().strip() or self.settings["ly_do_mac_dinh"]
+        self._snapshot(f"Lý do {ma}/{day}")
         w["reasons"][day] = text
         self._cap_nhat_hang_dd(ma)
-        mau = self.DO if text == LY_DO_MAC_DINH else self.VANG
+        mau = self.DO if text == self.settings["ly_do_mac_dinh"] else self.VANG
         self.thong_bao(f"✓ Đã lưu {d['name']} — T{self.tuan_hien_tai} {day}: {text}", mau)
 
     def danh_dau_khong_phep(self):
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
         w = self._du_lieu_tuan(ma)
         if not w: return
-        d = HocSinh[ma]
+        d = self.HocSinh[ma]
         if w["attendance"].get(day, False):
             self.thong_bao("⚠ Ô này là CÓ MẶT", self.VANG); return
-        w["reasons"][day] = LY_DO_MAC_DINH
-        self.bien_ly_do.set(LY_DO_MAC_DINH)
+        self._snapshot(f"Không phép {ma}/{day}")
+        w["reasons"][day] = self.settings["ly_do_mac_dinh"]
+        self.bien_ly_do.set(self.settings["ly_do_mac_dinh"])
         self._cap_nhat_hang_dd(ma)
-        self.thong_bao(f"⊘ {d['name']} — T{self.tuan_hien_tai} {day}: {LY_DO_MAC_DINH}", self.DO)
+        self.thong_bao(f"⊘ {d['name']} — T{self.tuan_hien_tai} {day}: "
+                        f"{self.settings['ly_do_mac_dinh']}", self.DO)
 
     def luu_loi(self):
         if not self.o_hien_tai:
-            self.thong_bao("⚠ Chưa chọn ô nào để ghi lỗi", self.VANG); return
+            self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
         w = self._du_lieu_tuan(ma)
         if not w: return
-        d = HocSinh[ma]
+        d = self.HocSinh[ma]
         text = self.o_loi.get("1.0", "end-1c").strip()
+        self._snapshot(f"Lỗi {ma}/{day}")
         w["errors"][day] = text
         self._cap_nhat_hang_dd(ma)
         if text:
@@ -1323,69 +1807,193 @@ class UngDungQuanLy:
     def xoa_loi(self):
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
         w = self._du_lieu_tuan(ma)
         if not w: return
-        d = HocSinh[ma]
+        d = self.HocSinh[ma]
+        self._snapshot(f"Xóa lỗi {ma}/{day}")
         w["errors"][day] = ""
         self.o_loi.delete("1.0", "end")
         self._cap_nhat_hang_dd(ma)
         self.thong_bao(f"✓ Đã xóa lỗi {d['name']} — T{self.tuan_hien_tai} {day}", self.XANH_LA)
 
-    # ────── Hàng loạt ──────
+    # ═══ Bulk ═══
     def danh_dau_tat_ca(self):
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         sel = self.bang.selection()
-        ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel] if sel else list(HocSinh.keys())
+        ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel] if sel \
+                else list(self.HocSinh.keys())
+        self._snapshot(f"Bulk có mặt {len(ds_ma)} HS")
         for ma in ds_ma:
             w = self._du_lieu_tuan(ma)
             if w:
                 for day in THU:
                     w["attendance"][day] = True
                     w["reasons"][day] = ""
-        self.cap_nhat_diem_danh(); self._xoa_panel_ct()
-        self.thong_bao(f"✓ Đã đánh dấu có mặt tuần {self.tuan_hien_tai} cho {len(ds_ma)} học sinh", self.XANH_LA)
+        self.cap_nhat_diem_danh()
+        self._xoa_panel_ct()
+        self.thong_bao(f"✓ Đã đánh dấu có mặt tuần {self.tuan_hien_tai} "
+                        f"cho {len(ds_ma)} HS", self.XANH_LA)
 
     def bo_danh_dau_tat_ca(self):
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         sel = self.bang.selection()
-        ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel] if sel else list(HocSinh.keys())
+        ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel] if sel \
+                else list(self.HocSinh.keys())
+        self._snapshot(f"Bulk vắng {len(ds_ma)} HS")
         for ma in ds_ma:
             w = self._du_lieu_tuan(ma)
             if w:
                 for day in THU:
                     w["attendance"][day] = False
-                    w["reasons"][day] = LY_DO_MAC_DINH
-        self.cap_nhat_diem_danh(); self._xoa_panel_ct()
-        self.thong_bao(f"⊘ Đã đánh dấu vắng tuần {self.tuan_hien_tai} cho {len(ds_ma)} học sinh", self.DO)
+                    w["reasons"][day] = self.settings["ly_do_mac_dinh"]
+        self.cap_nhat_diem_danh()
+        self._xoa_panel_ct()
+        self.thong_bao(f"⊘ Đã đánh dấu vắng tuần {self.tuan_hien_tai} "
+                        f"cho {len(ds_ma)} HS", self.DO)
 
+    # ═══ Stats ═══
+    def mo_thong_ke(self):
+        win = tk.Toplevel(self.root)
+        win.title("Báo cáo thống kê")
+        win.configure(bg=self.NEN)
+        win.geometry("800x600")
+
+        tk.Label(win, text="📊  THỐNG KÊ CHUYÊN CẦN",
+                 bg=self.NEN, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 14, "bold")).pack(pady=10)
+
+        frame = tk.Frame(win, bg=self.NEN)
+        frame.pack(fill="both", expand=True, padx=15, pady=10)
+
+        cols = ("name", "class", "present", "excused", "absent", "rate", "errors")
+        tv = ttk.Treeview(frame, columns=cols, show="headings")
+        headers = [
+            ("name",    "Học sinh",   200),
+            ("class",   "Lớp",         80),
+            ("present", "Có mặt",      80),
+            ("excused", "Có phép",     80),
+            ("absent",  "Không phép",  90),
+            ("rate",    "Tỉ lệ",        80),
+            ("errors",  "Lỗi",          60),
+        ]
+        for k, txt, w in headers:
+            tv.heading(k, text=txt)
+            tv.column(k, width=w, anchor="center" if k != "name" else "w")
+
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=scroll.set)
+        tv.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+        rows = []
+        for ma, d in self.HocSinh.items():
+            n_present = n_excused = n_absent = n_err = 0
+            for t, w in d.get("weeks", {}).items():
+                att = w.get("attendance", {})
+                rea = w.get("reasons",    {})
+                err = w.get("errors",     {})
+                for day in THU:
+                    if att.get(day, False):
+                        n_present += 1
+                    else:
+                        r = rea.get(day, "").strip()
+                        if r and r != ly_do_md:
+                            n_excused += 1
+                        else:
+                            n_absent += 1
+                    if err.get(day, "").strip():
+                        n_err += 1
+            total = n_present + n_excused + n_absent
+            rate = (n_present / total * 100) if total else 0
+            rows.append((d["name"], d["class"], n_present, n_excused,
+                          n_absent, f"{rate:.1f}%", n_err))
+
+        rows.sort(key=lambda r: -r[5].__str__().__len__())  # placeholder
+        rows.sort(key=lambda r: float(r[5].rstrip("%")))    # sort by rate asc
+        rows.reverse()
+
+        for i, r in enumerate(rows):
+            tag = "le" if i % 2 else "chan"
+            tv.tag_configure(tag, background=self.NEN2 if i % 2 else self.NEN)
+            tv.insert("", "end", values=r, tags=(tag,))
+
+        tk.Button(win, text="Đóng", command=win.destroy,
+                  bg=self.NEN3, fg=self.CHU, relief="flat",
+                  font=("Segoe UI", 10, "bold"), padx=20, pady=6
+                  ).pack(pady=10)
+
+    def xuat_csv(self):
+        if not self.HocSinh:
+            self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            initialfile=f"diem_danh_tuan_{self.tuan_hien_tai}.csv")
+        if not path: return
+
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                wr = csv.writer(f)
+                wr.writerow(["Mã", "Họ tên", "Lớp", "Tuần"] + THU)
+                for ma in sorted(self.HocSinh.keys()):
+                    d = self.HocSinh[ma]
+                    w = self._du_lieu_tuan(ma)
+                    ky_hieu = [self._ky_hieu_o(ma, day) for day in THU]
+                    wr.writerow([ma, d["name"], d["class"],
+                                  f"Tuần {self.tuan_hien_tai}"] + ky_hieu)
+            self.thong_bao(f"✓ Đã xuất CSV: {os.path.basename(path)}", self.XANH_LA)
+        except Exception as e:
+            self.thong_bao(f"✗ Lỗi xuất CSV: {e}", self.DO)
+
+    # ═══ Auto-save ═══
+    def _schedule_auto_save(self):
+        ms = self.settings["auto_save_interval_s"] * 1000
+        self.root.after(ms, self._auto_save_tick)
+
+    def _auto_save_tick(self):
+        if self._dirty and not self._saving:
+            log_info("Auto-save...")
+            self.luu_ngay()
+        self._schedule_auto_save()
+
+    # ═══ Status ═══
     def thong_bao(self, msg, mau=None):
         self.thanh_trang_thai.config(text=msg, fg=mau or self.CHU_MO)
 
     def khi_dong(self):
         if self.hen_gio_click:
             self.root.after_cancel(self.hen_gio_click)
-        try:
-            if GH_CONFIG:
-                print("\n[Close] Đang lưu + push GitHub...")
-            ghi_file()
-        except Exception:
-            pass
+        if self._dirty:
+            try:
+                ghi_file(self.HocSinh, self.settings["ly_do_mac_dinh"], DATA_FILE)
+            except Exception as e:
+                log_error(f"Save on close: {e}")
+        save_settings(self.settings)
         self.root.destroy()
 
 
 # ═══════════════════════════════════════════════════════════════
-# CHẠY
+# MAIN
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print("═" * 60)
-    print("  HỆ THỐNG QUẢN LÝ HỌC SINH")
-    print("═" * 60)
+    print("═" * 62)
+    print("  HỆ THỐNG QUẢN LÝ HỌC SINH v2.0")
+    print("═" * 62)
     if os.path.exists(GH_CONFIG_FILE):
         print(f"  Config: {GH_CONFIG_FILE}")
+    elif os.environ.get("GITHUB_TOKEN"):
+        print(f"  Config: từ ENV (GITHUB_TOKEN)")
     else:
         print(f"  ⚠ Không có {GH_CONFIG_FILE} → chạy local-only")
-        print(f"  Để bật sync GitHub, tạo file {GH_CONFIG_FILE} với:")
-        print('    {"owner": "USER", "repo": "REPO", "token": "TOKEN"}')
-    print("═" * 60 + "\n")
+    print(f"  Data:   {DATA_FILE}")
+    print(f"  Log:    {LOG_FILE}")
+    print("═" * 62 + "\n")
 
     root = tk.Tk()
     UngDungQuanLy(root)
