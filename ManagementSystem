@@ -459,12 +459,20 @@ def doc_file(HocSinh, filename=DATA_FILE):
             for k in ("attendance", "reasons", "errors"):
                 info.pop(k, None)
 
-        # Fill missing weeks
+        # ── Chuẩn hóa key int + điền tuần thiếu ──
+        weeks_int = {}
+        for k, v in info["weeks"].items():
+            try:
+                t_int = int(k)
+            except (ValueError, TypeError):
+                continue
+            weeks_int[t_int] = _chuan_hoa_tuan(v)
+
         for t in range(1, TONG_TUAN + 1):
-            if t not in info["weeks"]:
-                info["weeks"][t] = tuan_moi()
-            else:
-                info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+            if t not in weeks_int:
+                weeks_int[t] = tuan_moi()
+
+        info["weeks"] = weeks_int
 
         # Validate schema
         if not validate_hs_info(info):
@@ -1317,11 +1325,19 @@ class UngDungQuanLy:
                     info["weeks"][1]["errors"]     = info.get("errors",     loi_moi())
                     for k in ("attendance", "reasons", "errors"):
                         info.pop(k, None)
+                weeks_int = {}
+                for k, v in info["weeks"].items():
+                    try:
+                        t_int = int(k)
+                    except (ValueError, TypeError):
+                        continue
+                    weeks_int[t_int] = _chuan_hoa_tuan(v)
+
                 for t in range(1, TONG_TUAN + 1):
-                    if t not in info["weeks"]:
-                        info["weeks"][t] = tuan_moi()
-                    else:
-                        info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+                    if t not in weeks_int:
+                        weeks_int[t] = tuan_moi()
+
+                info["weeks"] = weeks_int
                 if not validate_hs_info(info):
                     info["name"]  = str(info.get("name",  ""))
                     info["class"] = str(info.get("class", ""))
