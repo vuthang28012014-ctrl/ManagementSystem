@@ -274,6 +274,64 @@ def github_push(config, content, commit_msg=None):
 
     return False, "Conflict sau 3 lần thử"
 
+# ═══════════════════════════════════════════════════════════════
+# GITHUB HISTORY API
+# ═══════════════════════════════════════════════════════════════
+def github_commits(config, limit=30):
+    """Lấy list commits của path. Trả list dict hoặc []."""
+    if not URLLIB_OK or not config:
+        return []
+    owner, repo, branch, path = (config["owner"], config["repo"],
+                                 config["branch"], config["path"])
+    url = (f"https://api.github.com/repos/{owner}/{repo}/commits"
+           f"?path={path}&sha={branch}&per_page={limit}")
+    headers = {
+        "Authorization": f"token {config['token']}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "ManagementSystem/2.0",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        out = []
+        for c in data:
+            out.append({
+                "sha":    c["sha"],
+                "short":  c["sha"][:7],
+                "msg":    c["commit"]["message"],
+                "author": c["commit"]["author"]["name"],
+                "email":  c["commit"]["author"]["email"],
+                "date":   c["commit"]["author"]["date"],
+            })
+        return out
+    except urllib.error.HTTPError as e:
+        log_error(f"Fetch commits HTTP {e.code}")
+        return []
+    except Exception as e:
+        log_error(f"Fetch commits fail: {e}")
+        return []
+
+
+def github_content_at_sha(config, sha):
+    """Lấy content file tại 1 commit. Trả string hoặc None."""
+    if not URLLIB_OK or not config:
+        return None
+    owner, repo, path = config["owner"], config["repo"], config["path"]
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={sha}"
+    headers = {
+        "Authorization": f"token {config['token']}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "ManagementSystem/2.0",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return base64.b64decode(data["content"]).decode("utf-8")
+    except Exception as e:
+        log_error(f"Fetch content @{sha[:7]} fail: {e}")
+        return None
 
 def github_health_check(config):
     """Trả (ok, msg). Chạy trong thread."""
@@ -518,6 +576,87 @@ def _normalize_remote(raw):
         out[sid] = info
     return out
 
+# ═══════════════════════════════════════════════════════════════
+# DIFF DATA — so sánh 2 phiên bản HocSinh
+# ═══════════════════════════════════════════════════════════════
+def _normalize_simple(raw):
+    """Normalize dict raw → {sid_int: info} với weeks key int."""
+    out = {}
+    for sid_str, info in raw.items():
+        if sid_str == "_meta":
+            continue
+        try:
+            sid = int(sid_str)
+        except (ValueError, TypeError):
+            continue
+        weeks_int = {}
+        for k, v in (info.get("weeks") or {}).items():
+            try:
+                weeks_int[int(k)] = _chuan_hoa_tuan(v)
+            except (ValueError, TypeError):
+                pass
+        for t in range(1, TONG_TUAN + 1):
+            weeks_int.setdefault(t, tuan_moi())
+        info["weeks"] = weeks_int
+        out[sid] = info
+    return out
+
+
+def diff_data(old_raw, new_raw):
+    """
+    So sánh 2 dataset.
+    Trả về list các dòng mô tả thay đổi.
+    """
+    changes = []
+    old_ids = set(old_raw.keys())
+    new_ids = set(new_raw.keys())
+
+    for sid in sorted(old_ids - new_ids):
+        changes.append(f"➖ Xóa HS [{sid}] {old_raw[sid].get('name','')}")
+
+    for sid in sorted(new_ids - old_ids):
+        changes.append(f"➕ Thêm HS [{sid}] {new_raw[sid].get('name','')}")
+
+    for sid in sorted(old_ids & new_ids):
+        o = old_raw[sid]; n = new_raw[sid]
+        name = n.get("name", "")
+        if o.get("name") != n.get("name"):
+            changes.append(
+                f"✏️  [{sid}] Đổi tên: '{o.get('name','')}' → '{n.get('name','')}'")
+        if o.get("class") != n.get("class"):
+            changes.append(
+                f"✏️  [{sid}] Đổi lớp: '{o.get('class','')}' → '{n.get('class','')}'")
+
+        ow = o.get("weeks", {})
+        nw = n.get("weeks", {})
+        for t in range(1, TONG_TUAN + 1):
+            ow_t = ow.get(t) or {}
+            nw_t = nw.get(t) or {}
+            if ow_t == nw_t:
+                continue
+
+            oatt = ow_t.get("attendance", {})
+            natt = nw_t.get("attendance", {})
+            orea = ow_t.get("reasons", {})
+            nrea = nw_t.get("reasons", {})
+            oerr = ow_t.get("errors", {})
+            nerr = nw_t.get("errors", {})
+
+            for day in THU:
+                if oatt.get(day) != natt.get(day):
+                    arrow = "✓ → ⊘" if oatt.get(day) else "⊘ → ✓"
+                    changes.append(
+                        f"  [{sid}] {name} · Tuần {t} {day} · điểm danh: {arrow}")
+                if orea.get(day, "") != nrea.get(day, ""):
+                    changes.append(
+                        f"  [{sid}] {name} · Tuần {t} {day} · lý do: "
+                        f"'{orea.get(day,'')}' → '{nrea.get(day,'')}'")
+                if oerr.get(day, "") != nerr.get(day, ""):
+                    changes.append(
+                        f"  [{sid}] {name} · Tuần {t} {day} · lỗi: "
+                        f"'{oerr.get(day,'')}' → '{nerr.get(day,'')}'")
+
+    return changes
 
 def _merge_week(local_w, remote_w):
     """
@@ -968,6 +1107,8 @@ class UngDungQuanLy:
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
                       self.XANH_DUONG, self.XANH_DUONG_H
                       ).pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📜  Lịch sử thay đổi", self.mo_lich_su,
+                self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📁  Xuất CSV", self.xuat_csv,
@@ -1966,6 +2107,208 @@ class UngDungQuanLy:
             self.thong_bao(f"✓ Đã xuất CSV: {os.path.basename(path)}", self.XANH_LA)
         except Exception as e:
             self.thong_bao(f"✗ Lỗi xuất CSV: {e}", self.DO)
+
+        # ═══ Lịch sử thay đổi ═══
+    def mo_lich_su(self):
+        if not GH_CONFIG:
+            messagebox.showwarning("Không có GitHub",
+                                    "Cần github_config.json để xem lịch sử")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("📜 Lịch sử thay đổi")
+        win.configure(bg=self.NEN)
+        win.geometry("1000x720")
+        win.minsize(820, 600)
+
+        # ── Header ──
+        header = tk.Frame(win, bg=self.NEN2, height=44)
+        header.pack(fill="x"); header.pack_propagate(False)
+        tk.Label(header, text="📜  LỊCH SỬ THAY ĐỔI",
+                 bg=self.NEN2, fg=self.TIM,
+                 font=("Segoe UI", 13, "bold")).pack(side="left", padx=15, pady=8)
+        status = tk.Label(header, text="Đang tải...",
+                          bg=self.NEN2, fg=self.CHU_MO,
+                          font=("Segoe UI", 9, "italic"))
+        status.pack(side="right", padx=15)
+
+        # ── Controls ──
+        ctrl = tk.Frame(win, bg=self.NEN2)
+        ctrl.pack(fill="x", padx=10, pady=6)
+
+        tk.Label(ctrl, text="Số commit:", bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9)).pack(side="left")
+        limit_var = tk.StringVar(value="30")
+        limit_cbb = ttk.Combobox(ctrl, textvariable=limit_var,
+                                  values=["10", "30", "50", "100"],
+                                  width=5, state="readonly")
+        limit_cbb.pack(side="left", padx=(4, 12))
+
+        tk.Label(ctrl, text="Tác giả:", bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9)).pack(side="left")
+        author_var = tk.StringVar(value="Tất cả")
+        author_cbb = ttk.Combobox(ctrl, textvariable=author_var,
+                                   values=["Tất cả"], width=22, state="readonly")
+        author_cbb.pack(side="left", padx=(4, 12))
+
+        refresh_btn = tk.Button(ctrl, text="🔄 Tải lại",
+                                 bg=self.XANH_DUONG, fg="#1e1e2e",
+                                 relief="flat", font=("Segoe UI", 9, "bold"),
+                                 padx=12, pady=3, cursor="hand2")
+        refresh_btn.pack(side="left", padx=4)
+
+        # ── Treeview ──
+        tv_frame = tk.Frame(win, bg=self.NEN)
+        tv_frame.pack(fill="both", expand=False, padx=10, pady=(0, 6))
+
+        cols = ("time", "author", "msg", "sha")
+        tv = ttk.Treeview(tv_frame, columns=cols, show="headings", height=9)
+        tv.heading("time",   text="Thời gian")
+        tv.heading("author", text="Người sửa")
+        tv.heading("msg",    text="Ghi chú")
+        tv.heading("sha",    text="SHA")
+        tv.column("time",   width=160, anchor="w")
+        tv.column("author", width=160, anchor="w")
+        tv.column("msg",    width=460, anchor="w")
+        tv.column("sha",    width=80,  anchor="center")
+
+        sc = ttk.Scrollbar(tv_frame, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sc.set)
+        tv.pack(side="left", fill="both", expand=True)
+        sc.pack(side="right", fill="y")
+
+        # ── Diff panel ──
+        tk.Label(win, text="Chi tiết thay đổi:",
+                 bg=self.NEN, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10)
+
+        diff_frame = tk.Frame(win, bg=self.NEN)
+        diff_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        diff_txt = tk.Text(diff_frame, bg=self.NEN2, fg=self.CHU,
+                           insertbackground=self.CHU, relief="flat",
+                           font=("Consolas", 9), wrap="word",
+                           padx=8, pady=6)
+        diff_sc = ttk.Scrollbar(diff_frame, orient="vertical",
+                                 command=diff_txt.yview)
+        diff_txt.configure(yscrollcommand=diff_sc.set)
+        diff_txt.pack(side="left", fill="both", expand=True)
+        diff_sc.pack(side="right", fill="y")
+
+        diff_txt.tag_configure("add",  foreground=self.XANH_LA)
+        diff_txt.tag_configure("del",  foreground=self.DO)
+        diff_txt.tag_configure("mod",  foreground=self.VANG)
+        diff_txt.tag_configure("info", foreground=self.CHU_MO)
+        diff_txt.config(state="disabled")
+
+        # ── State ──
+        state = {"commits": [], "loading": False}
+
+        def render_diff(lines):
+            diff_txt.config(state="normal")
+            diff_txt.delete("1.0", "end")
+            if not lines:
+                diff_txt.insert("end", "(Chưa chọn commit)\n", "info")
+            else:
+                for ln in lines:
+                    if ln.startswith("➕"):   tag = "add"
+                    elif ln.startswith("➖"): tag = "del"
+                    elif ln.startswith("✏️"):  tag = "mod"
+                    elif ln.startswith("  "):   tag = "mod"
+                    else:                       tag = "info"
+                    diff_txt.insert("end", ln + "\n", tag)
+            diff_txt.config(state="disabled")
+
+        def populate_tv():
+            for i in tv.get_children(): tv.delete(i)
+            a = author_var.get()
+            for i, c in enumerate(state["commits"]):
+                if a != "Tất cả" and c["author"] != a: continue
+                tv.insert("", "end", iid=str(i), values=(
+                    c["date"].replace("T", " ").replace("Z", "")[:19],
+                    c["author"],
+                    c["msg"].split("\n")[0],
+                    c["short"],
+                ))
+
+        def load_commits():
+            if state["loading"]: return
+            state["loading"] = True
+            status.config(text="Đang tải commits...", fg=self.XANH_DUONG)
+
+            def task():
+                return github_commits(GH_CONFIG, limit=int(limit_var.get()))
+
+            def done(commits):
+                state["commits"] = commits
+                authors = sorted({c["author"] for c in commits})
+                author_cbb["values"] = ["Tất cả"] + authors
+                if author_var.get() not in author_cbb["values"]:
+                    author_var.set("Tất cả")
+                populate_tv()
+                status.config(text=f"✓ {len(commits)} commit", fg=self.XANH_LA)
+                state["loading"] = False
+
+            def err(e):
+                status.config(text=f"✗ Lỗi: {e}", fg=self.DO)
+                state["loading"] = False
+
+            self._async(task, on_success=done, on_error=err)
+
+        def on_select(event):
+            sel = tv.selection()
+            if not sel: return
+            idx = int(sel[0])
+            if idx >= len(state["commits"]): return
+            commit = state["commits"][idx]
+            # Parent commit
+            parent = state["commits"][idx + 1] if idx + 1 < len(state["commits"]) else None
+
+            status.config(text=f"Đang tải diff {commit['short']}...",
+                          fg=self.XANH_DUONG)
+
+            def task():
+                new_c = github_content_at_sha(GH_CONFIG, commit["sha"])
+                old_c = github_content_at_sha(GH_CONFIG, parent["sha"]) \
+                        if parent else "{}"
+                return (new_c, old_c, commit, parent)
+
+            def done(res):
+                new_c, old_c, c, p = res
+                if not new_c:
+                    render_diff([f"⚠ Không tải được nội dung {c['short']}"])
+                    status.config(text="✗ Fetch fail", fg=self.DO)
+                    return
+                try:
+                    new_raw = json.loads(new_c) if new_c else {}
+                    old_raw = json.loads(old_c) if old_c else {}
+                except Exception as ex:
+                    render_diff([f"⚠ JSON lỗi: {ex}"])
+                    status.config(text="✗ Parse fail", fg=self.DO)
+                    return
+                new_d = _normalize_simple(new_raw)
+                old_d = _normalize_simple(old_raw) if old_raw else {}
+                diffs = diff_data(old_d, new_d)
+
+                head = f"Commit {c['short']} bởi {c['author']} · {c['date'][:19]}"
+                head += f"\nSo với {p['short']}" if p else "\n(commit đầu tiên)"
+                head += f"\n{'-'*60}"
+                render_diff([head] + diffs)
+                status.config(text=f"✓ {len(diffs)} thay đổi", fg=self.XANH_LA)
+
+            def err(e):
+                render_diff([f"⚠ Lỗi: {e}"])
+                status.config(text="✗ Lỗi", fg=self.DO)
+
+            self._async(task, on_success=done, on_error=err)
+
+        refresh_btn.config(command=load_commits)
+        limit_cbb.bind("<<ComboboxSelected>>", lambda e: load_commits())
+        author_cbb.bind("<<ComboboxSelected>>", lambda e: populate_tv())
+        tv.bind("<<TreeviewSelect>>", on_select)
+
+        render_diff([])
+        load_commits()
 
     # ═══ Auto-save ═══
     def _schedule_auto_save(self):
