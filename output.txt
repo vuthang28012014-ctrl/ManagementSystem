@@ -1,11 +1,881 @@
 {
   "_meta": {
-    "updated_at": "2026-10-12T04:11:01.658356+00:00"
+    "updated_at": "2026-10-12T04:20:08.645188+00:00"
   },
-  "36": {
-    "name": "Phạm Minh Quang",
+  "34": {
+    "name": "Trịnh Đức Anh",
     "class": "7A6",
     "weeks": {
+      "1": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "2": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "3": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "4": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "5": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "6": {
+        "attendance": {
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
+        },
+        "reasons": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "7": {
+        "attendance": {
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
+        },
+        "reasons": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        },
+        "errors": {
+          "T2": "Kéo dây giày của bạn",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "8": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "9": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "10": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "11": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "12": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "13": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "14": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "15": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "16": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "17": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "18": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "19": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "20": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "21": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "22": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "23": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "24": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "25": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "26": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "27": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "28": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "29": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "30": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "31": {
         "attendance": {
           "T2": false,
@@ -64,6 +934,35 @@
           "CN": ""
         }
       },
+      "33": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "34": {
         "attendance": {
           "T2": false,
@@ -93,7 +992,100 @@
           "CN": ""
         }
       },
-      "24": {
+      "35": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      }
+    }
+  },
+  "35": {
+    "name": "Nguyễn Cao Kỳ",
+    "class": "7A6",
+    "weeks": {
+      "1": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "2": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "3": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -151,7 +1143,7 @@
           "CN": ""
         }
       },
-      "14": {
+      "5": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -180,7 +1172,65 @@
           "CN": ""
         }
       },
-      "10": {
+      "6": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "7": {
+        "attendance": {
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
+        },
+        "reasons": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        },
+        "errors": {
+          "T2": "MTT giờ Mĩ Thuật",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "8": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -238,7 +1288,36 @@
           "CN": ""
         }
       },
-      "26": {
+      "10": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "11": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -296,6 +1375,122 @@
           "CN": ""
         }
       },
+      "13": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "14": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "15": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "16": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "17": {
         "attendance": {
           "T2": false,
@@ -325,7 +1520,7 @@
           "CN": ""
         }
       },
-      "21": {
+      "18": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -383,7 +1578,239 @@
           "CN": ""
         }
       },
-      "13": {
+      "20": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "21": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "22": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "23": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "24": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "25": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "26": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "27": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "28": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -413,6 +1840,331 @@
         }
       },
       "29": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "30": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "31": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "32": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "33": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "34": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "35": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      }
+    }
+  },
+  "36": {
+    "name": "Phạm Minh Quang",
+    "class": "7A6",
+    "weeks": {
+      "1": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "2": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "3": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "4": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "5": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -470,7 +2222,36 @@
           "CN": ""
         }
       },
-      "22": {
+      "7": {
+        "attendance": {
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "8": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -499,7 +2280,7 @@
           "CN": ""
         }
       },
-      "25": {
+      "9": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -528,94 +2309,7 @@
           "CN": ""
         }
       },
-      "1": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "20": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "28": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "35": {
+      "10": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -673,7 +2367,7 @@
           "CN": ""
         }
       },
-      "18": {
+      "12": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -702,7 +2396,36 @@
           "CN": ""
         }
       },
-      "16": {
+      "13": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "14": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -760,7 +2483,7 @@
           "CN": ""
         }
       },
-      "3": {
+      "16": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -789,7 +2512,7 @@
           "CN": ""
         }
       },
-      "8": {
+      "17": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -818,7 +2541,7 @@
           "CN": ""
         }
       },
-      "30": {
+      "18": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -847,7 +2570,94 @@
           "CN": ""
         }
       },
-      "5": {
+      "19": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "20": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "21": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "22": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -905,7 +2715,7 @@
           "CN": ""
         }
       },
-      "7": {
+      "24": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -934,7 +2744,36 @@
           "CN": ""
         }
       },
-      "2": {
+      "25": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "26": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -992,7 +2831,7 @@
           "CN": ""
         }
       },
-      "33": {
+      "28": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -1020,13 +2859,65 @@
           "T7": "",
           "CN": ""
         }
-      }
-    }
-  },
-  "47": {
-    "name": "Vũ Thắng",
-    "class": "7A6",
-    "weeks": {
+      },
+      "29": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "30": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "31": {
         "attendance": {
           "T2": false,
@@ -1085,529 +2976,36 @@
           "CN": ""
         }
       },
+      "33": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "34": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "24": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "4": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "14": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "10": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "9": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "26": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "12": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "17": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "21": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "19": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "13": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "29": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "6": {
-        "attendance": {
-          "T2": true,
-          "T3": true,
-          "T4": true,
-          "T5": true,
-          "T6": true,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "MTT giờ GDCD",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "22": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "25": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "1": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "20": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "28": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -1664,269 +3062,14 @@
           "T7": "",
           "CN": ""
         }
-      },
-      "11": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "18": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "16": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "15": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "3": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "8": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "30": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "5": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "23": {
-        "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
-        },
-        "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
-        },
-        "errors": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
-        }
-      },
-      "7": {
+      }
+    }
+  },
+  "47": {
+    "name": "Vũ Thắng",
+    "class": "7A6",
+    "weeks": {
+      "1": {
         "attendance": {
           "T2": false,
           "T3": false,
@@ -1984,6 +3127,702 @@
           "CN": ""
         }
       },
+      "3": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "4": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "5": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "6": {
+        "attendance": {
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "MTT giờ GDCD",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "7": {
+        "attendance": {
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "8": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "9": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "10": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "11": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "12": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "13": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "14": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "15": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "16": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "17": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "18": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "19": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "20": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "21": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "22": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "23": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "24": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "25": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "26": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "27": {
         "attendance": {
           "T2": false,
@@ -2013,7 +3852,210 @@
           "CN": ""
         }
       },
+      "28": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "29": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "30": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "31": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "32": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
       "33": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "34": {
+        "attendance": {
+          "T2": false,
+          "T3": false,
+          "T4": false,
+          "T5": false,
+          "T6": false,
+          "T7": false,
+          "CN": false
+        },
+        "reasons": {
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
+        },
+        "errors": {
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
+        }
+      },
+      "35": {
         "attendance": {
           "T2": false,
           "T3": false,
