@@ -549,7 +549,7 @@ def doc_file(HocSinh, filename=DATA_FILE):
 # MERGE DATA — union merge, không mất dữ liệu
 # ═══════════════════════════════════════════════════════════════
 def _normalize_remote(raw):
-    """Chuẩn hóa data remote về format chuẩn."""
+    """Chuẩn hóa data remote về format chuẩn (key int)."""
     out = {}
     for sid_str, info in raw.items():
         if sid_str == "_meta":
@@ -565,11 +565,18 @@ def _normalize_remote(raw):
             info["weeks"][1]["errors"]     = info.get("errors",     loi_moi())
             for k in ("attendance", "reasons", "errors"):
                 info.pop(k, None)
+
+        # ── FIX: normalize key về int ──
+        weeks_int = {}
+        for k, v in (info.get("weeks") or {}).items():
+            try:
+                weeks_int[int(k)] = _chuan_hoa_tuan(v)
+            except (ValueError, TypeError):
+                continue
         for t in range(1, TONG_TUAN + 1):
-            if t not in info["weeks"]:
-                info["weeks"][t] = tuan_moi()
-            else:
-                info["weeks"][t] = _chuan_hoa_tuan(info["weeks"][t])
+            weeks_int.setdefault(t, tuan_moi())
+        info["weeks"] = weeks_int
+
         if not validate_hs_info(info):
             info["name"]  = str(info.get("name",  ""))
             info["class"] = str(info.get("class", ""))
@@ -682,43 +689,58 @@ def _merge_week(local_w, remote_w):
 
 
 def _merge_hs(local_hs, remote_hs):
-    """Union merge 1 học sinh."""
     merged = {
         "name":  local_hs.get("name")  or remote_hs.get("name",  ""),
         "class": local_hs.get("class") or remote_hs.get("class", ""),
         "weeks": {},
     }
-    lw = local_hs.get("weeks", {}) or {}
-    rw = remote_hs.get("weeks", {}) or {}
-    all_weeks = {str(k) for k in lw.keys()} | {str(k) for k in rw.keys()}
+
+    # ── FIX: normalize cả 2 bên về int key ──
+    def _norm(w):
+        out = {}
+        for k, v in (w or {}).items():
+            try:
+                out[int(k)] = v
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    lw = _norm(local_hs.get("weeks"))
+    rw = _norm(remote_hs.get("weeks"))
+
+    all_weeks = set(lw.keys()) | set(rw.keys())    # int keys
     for wk in all_weeks:
-        l_val = lw.get(wk) or lw.get(int(wk) if wk.isdigit() else wk)
-        r_val = rw.get(wk) or rw.get(int(wk) if wk.isdigit() else wk)
+        l_val = lw.get(wk)
+        r_val = rw.get(wk)
         if l_val and r_val:
             merged["weeks"][wk] = _merge_week(l_val, r_val)
         elif l_val:
             merged["weeks"][wk] = l_val
         else:
             merged["weeks"][wk] = r_val
-    # Đảm bảo đủ 35 tuần
+
     for t in range(1, TONG_TUAN + 1):
-        key = str(t)
-        if key not in merged["weeks"]:
-            merged["weeks"][key] = tuan_moi()
+        merged["weeks"].setdefault(t, tuan_moi())
     return merged
 
 
 def merge_data(local_data, remote_data):
-    """
-    Merge toàn bộ dataset.
-    local_data / remote_data: dict {sid_int: hs_info}
-    Trả về dict {sid_int: merged_info}
-    """
+    # ── FIX: normalize sid về int ──
+    def _norm_ids(d):
+        out = {}
+        for k, v in d.items():
+            try:
+                out[int(k)] = v
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    l = _norm_ids(local_data)
+    r = _norm_ids(remote_data)
+
     merged = {}
-    all_ids = set(local_data.keys()) | set(remote_data.keys())
-    for sid in all_ids:
-        l_hs = local_data.get(sid)
-        r_hs = remote_data.get(sid)
+    for sid in set(l.keys()) | set(r.keys()):
+        l_hs = l.get(sid); r_hs = r.get(sid)
         if l_hs and r_hs:
             merged[sid] = _merge_hs(l_hs, r_hs)
         elif l_hs:
@@ -1524,6 +1546,20 @@ class UngDungQuanLy:
         if not d: return None
         t = tuan if tuan is not None else self.tuan_hien_tai
         weeks = d.setdefault("weeks", tao_du_lieu_tat_ca_tuan())
+
+        # ── FIX: nếu lỡ có key string thì normalize về int ──
+        if weeks and any(isinstance(k, str) for k in weeks.keys()):
+            weeks_int = {}
+            for k, v in weeks.items():
+                try:
+                    weeks_int[int(k)] = _chuan_hoa_tuan(v)
+                except (ValueError, TypeError):
+                    continue
+            for ti in range(1, TONG_TUAN + 1):
+                weeks_int.setdefault(ti, tuan_moi())
+            d["weeks"] = weeks_int
+            weeks = weeks_int
+
         if t not in weeks:
             weeks[t] = tuan_moi()
         else:
