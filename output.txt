@@ -1,10 +1,11 @@
 {
   "_meta": {
-    "updated_at": "2026-10-12T14:13:56.318541+00:00"
+    "updated_at": "2026-10-12T15:17:19.385149+00:00"
   },
   "34": {
     "name": "Trịnh Đức Anh",
     "class": "7A6",
+    "to": "3",
     "weeks": {
       "1": {
         "attendance": {
@@ -1026,6 +1027,7 @@
   "35": {
     "name": "Nguyễn Cao Kỳ",
     "class": "7A6",
+    "to": "3",
     "weeks": {
       "1": {
         "attendance": {
@@ -2047,6 +2049,7 @@
   "36": {
     "name": "Phạm Minh Quang",
     "class": "7A6",
+    "to": "2",
     "weeks": {
       "1": {
         "attendance": {
@@ -3068,6 +3071,7 @@
   "47": {
     "name": "Vũ Thắng",
     "class": "7A6",
+    "to": "3",
     "weeks": {
       "1": {
         "attendance": {
