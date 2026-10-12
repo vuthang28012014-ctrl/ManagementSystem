@@ -43,6 +43,7 @@ import time as _time
 import csv
 import threading
 import traceback
+import random
 from datetime import datetime, timezone
 from collections import deque
 from copy import deepcopy
@@ -74,6 +75,8 @@ DEFAULT_SETTINGS = {
     "undo_stack_size":      30,
     "sort_key":             "ma",
     "sort_desc":            False,
+    "enable_animation":     True,     # ← THÊM
+    "enable_confetti":      True,      # ← THÊM
     "ly_do_goi_y":          ["Không phép", "Có phép", "Ốm", "Việc gia đình",
                               "Đi khám bệnh", "Đại hội", "Thi HSG"],
 }
@@ -124,6 +127,84 @@ def save_settings(s):
             json.dump(s, f, indent=2, ensure_ascii=False)
     except Exception as e:
         log_warn(f"Không ghi được settings.json: {e}")
+
+# ═══════════════════════════════════════════════════════════════
+# ANIMATION HELPERS
+# ═══════════════════════════════════════════════════════════════
+def _lerp(a, b, t): return a + (b - a) * t
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def _rgb_to_hex(rgb):
+    return "#{:02x}{:02x}{:02x}".format(*[max(0, min(255, int(c))) for c in rgb])
+
+
+def animate_color(widget, from_color, to_color, duration=150, steps=8,
+                  attr="bg", on_done=None):
+    """Tween widget color (bg/fg) từ from_color → to_color."""
+    if not widget: return
+    try:
+        f = _hex_to_rgb(from_color)
+        t = _hex_to_rgb(to_color)
+    except Exception:
+        return
+    delay = max(10, duration // steps)
+
+    def step(i):
+        try:
+            if not widget.winfo_exists(): return
+        except Exception:
+            return
+        k = i / steps
+        k = 1 - (1 - k) ** 3        # ease-out cubic
+        cur = tuple(_lerp(f[j], t[j], k) for j in range(3))
+        try:
+            widget.configure(**{attr: _rgb_to_hex(cur)})
+        except tk.TclError:
+            return
+        if i < steps:
+            widget.after(delay, lambda: step(i + 1))
+        elif on_done:
+            on_done()
+
+    step(0)
+
+
+def fade_in_window(root, duration=280, steps=14):
+    """Fade cửa sổ từ alpha 0 → 1 (Windows/macOS)."""
+    try:
+        root.attributes("-alpha", 0.0)
+    except Exception:
+        return
+    def step(i):
+        try: root.attributes("-alpha", i / steps)
+        except Exception: return
+        if i < steps:
+            root.after(max(12, duration // steps), lambda: step(i + 1))
+    step(1)
+
+
+def _remove_flash(tree, iid, tag, orig_tags):
+    try:
+        if tree.exists(iid):
+            tree.item(iid, tags=orig_tags)
+    except Exception:
+        pass
+
+
+def flash_row(tree, iid, color="#45475a", duration=420):
+    """Nhấp nháy 1 row Treeview."""
+    try:
+        if not tree.exists(iid): return
+        tag = f"_flash_{iid}_{_time.time_ns()}"
+        tree.tag_configure(tag, background=color)
+        orig = list(tree.item(iid, "tags"))
+        tree.item(iid, tags=orig + [tag])
+        tree.after(duration, lambda: _remove_flash(tree, iid, tag, orig))
+    except Exception:
+        pass
 
 # ═══════════════════════════════════════════════════════════════
 # GITHUB SYNC MODULE
@@ -532,6 +613,12 @@ def doc_file(HocSinh, filename=DATA_FILE):
 
         info["weeks"] = weeks_int
 
+        # Đảm bảo có field "to" (tổ)
+        if "to" not in info:
+            info["to"] = ""
+        else:
+            info["to"] = str(info["to"]).strip()
+
         # Validate schema
         if not validate_hs_info(info):
             log_warn(f"HS {sid} sai schema — chuyển name/class thành str")
@@ -577,6 +664,11 @@ def _normalize_remote(raw):
             weeks_int.setdefault(t, tuan_moi())
         info["weeks"] = weeks_int
 
+        if "to" not in info:
+            info["to"] = ""
+        else:
+            info["to"] = str(info["to"]).strip()
+
         if not validate_hs_info(info):
             info["name"]  = str(info.get("name",  ""))
             info["class"] = str(info.get("class", ""))
@@ -605,6 +697,10 @@ def _normalize_simple(raw):
         for t in range(1, TONG_TUAN + 1):
             weeks_int.setdefault(t, tuan_moi())
         info["weeks"] = weeks_int
+        if "to" not in info:
+            info["to"] = ""
+        else:
+            info["to"] = str(info["to"]).strip()
         out[sid] = info
     return out
 
@@ -692,6 +788,7 @@ def _merge_hs(local_hs, remote_hs):
     merged = {
         "name":  local_hs.get("name")  or remote_hs.get("name",  ""),
         "class": local_hs.get("class") or remote_hs.get("class", ""),
+        "to":    local_hs.get("to")    or remote_hs.get("to",    ""),
         "weeks": {},
     }
 
@@ -896,12 +993,17 @@ class UngDungQuanLy:
         self.bien_tim_ma     = None
         self.bien_tim_ten    = None
         self.bien_tim_lop    = None
+        self.bien_tim_to     = None
         self.nhan_ket_qua    = None
         self.khoa_sap_xep    = self.settings["sort_key"]
         self.dao_sap_xep     = self.settings["sort_desc"]
         self._dirty          = False
         self._debounce_job   = None
         self._saving         = False
+        self._progress_running = False
+        self._progress_pos     = 0
+        self._tw_job           = None
+        self._slide_busy       = False
 
         # Undo
         self.undo_stack = UndoStack(self.settings["undo_stack_size"])
@@ -948,7 +1050,11 @@ class UngDungQuanLy:
 
         self.o_ma.bind("<Return>",  lambda e: self.o_ten.focus_set())
         self.o_ten.bind("<Return>", lambda e: self.o_lop.focus_set())
-        self.o_lop.bind("<Return>", lambda e: self.them_hoc_sinh())
+        self.o_lop.bind("<Return>", lambda e: self.o_to.focus_set())
+        self.o_to.bind("<Return>",  lambda e: self.them_hoc_sinh())
+        # ── Animation: fade in cửa sổ ──
+        if self.settings.get("enable_animation", True):
+            fade_in_window(self.root)
 
     # ═══ Threading helpers ═══
     def _async(self, fn, on_success=None, on_error=None):
@@ -997,6 +1103,422 @@ class UngDungQuanLy:
             self.o_tim_ma.focus_set()
             self.o_tim_ma.selection_range(0, "end")
 
+    def mo_settings(self):
+        """Popup cài đặt — toggle animation/confetti + cấu hình + update log."""
+        win = tk.Toplevel(self.root)
+        win.title("⚙ Cài đặt")
+        win.configure(bg=self.NEN)
+        win.geometry("560x680")
+        win.minsize(500, 560)
+        win.transient(self.root)
+        if self.settings.get("enable_animation", True):
+            fade_in_window(win, duration=180, steps=8)
+
+        # ── Header ──
+        h = tk.Frame(win, bg=self.NEN2, height=52)
+        h.pack(fill="x"); h.pack_propagate(False)
+        tk.Label(h, text="⚙  CÀI ĐẶT", bg=self.NEN2, fg=self.TIM,
+                 font=("Segoe UI", 14, "bold")).pack(side="left", padx=18, pady=14)
+
+        # ── Tab bar ──
+        tab_bar = tk.Frame(win, bg=self.NEN2, height=38)
+        tab_bar.pack(fill="x"); tab_bar.pack_propagate(False)
+
+        self._settings_tab = tk.StringVar(value="effects")
+
+        tab_defs = [
+            ("effects", "🎬 Hiệu ứng"),
+            ("config",  "📋 Cấu hình khác"),
+            ("changelog", "📝 Update log"),
+        ]
+        tab_btns = {}
+
+        def switch_tab(key):
+            self._settings_tab.set(key)
+            for k, b in tab_btns.items():
+                if k == key:
+                    b.config(bg=self.NEN3, fg=self.XANH_DUONG)
+                else:
+                    b.config(bg=self.NEN2, fg=self.CHU_MO)
+            # Show/hide frames
+            for k, f in tab_frames.items():
+                if k == key:
+                    f.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+                else:
+                    f.pack_forget()
+
+        for key, label in tab_defs:
+            b = tk.Button(tab_bar, text=label,
+                          bg=self.NEN2, fg=self.CHU_MO,
+                          activebackground=self.NEN3,
+                          activeforeground=self.XANH_DUONG,
+                          relief="flat", cursor="hand2",
+                          font=("Segoe UI", 9, "bold"),
+                          padx=14, pady=6, bd=0,
+                          command=lambda k=key: switch_tab(k))
+            b.pack(side="left", padx=(6, 0), pady=4)
+            tab_btns[key] = b
+
+        # ── Container cho các tab ──
+        container = tk.Frame(win, bg=self.NEN)
+        container.pack(fill="both", expand=True)
+
+        tab_frames = {}
+
+        # ═══════════════════════════════════════════════════════
+        # TAB 1 — HIỆU ỨNG
+        # ═══════════════════════════════════════════════════════
+        f_effects = tk.Frame(container, bg=self.NEN)
+        tab_frames["effects"] = f_effects
+
+        tk.Label(f_effects, text="Bật/tắt hiệu ứng và âm thanh UI",
+                 bg=self.NEN, fg=self.CHU_MO,
+                 font=("Segoe UI", 8, "italic"), anchor="w"
+                 ).pack(fill="x", pady=(0, 8))
+
+        def make_toggle(parent, icon_label, desc, key, color_on):
+            row = tk.Frame(parent, bg=self.NEN2, padx=14, pady=12)
+            row.pack(fill="x", pady=4)
+
+            info = tk.Frame(row, bg=self.NEN2)
+            info.pack(side="left", fill="x", expand=True)
+            tk.Label(info, text=icon_label, bg=self.NEN2, fg=self.CHU,
+                     font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x")
+            tk.Label(info, text=desc, bg=self.NEN2, fg=self.CHU_MO,
+                     font=("Segoe UI", 8, "italic"), anchor="w",
+                     wraplength=340, justify="left").pack(fill="x", pady=(2, 0))
+
+            btn = tk.Button(row, bg=self.NEN3, fg=self.CHU,
+                            relief="flat", cursor="hand2",
+                            font=("Segoe UI", 9, "bold"),
+                            width=10, pady=5, bd=0)
+
+            def refresh():
+                cur = self.settings.get(key, True)
+                if cur:
+                    btn.config(text="✓ BẬT", bg=color_on, fg="#1e1e2e")
+                else:
+                    btn.config(text="✗ TẮT", bg=self.NEN3, fg=self.CHU)
+
+            def toggle():
+                cur = self.settings.get(key, True)
+                self.settings[key] = not cur
+                save_settings(self.settings)
+                refresh()
+                self.thong_bao(
+                    f"{icon_label}: {'BẬT' if not cur else 'TẮT'}",
+                    color_on if not cur else self.CHU_MO)
+
+            btn.config(command=toggle)
+            btn.pack(side="right", padx=(10, 0))
+            refresh()
+            return row
+
+        make_toggle(f_effects, "🎬  Animation",
+                    "Bật/tắt toàn bộ hiệu ứng chuyển động "
+                    "(fade, slide, flash, typewriter, progress bar, ...)",
+                    "enable_animation", self.XANH_LA)
+
+        make_toggle(f_effects, "🎉  Confetti",
+                    "Bắn pháo giấy khi push GitHub thành công. "
+                    "Chỉ hoạt động trên Windows.",
+                    "enable_confetti", self.TIM)
+
+        make_toggle(f_effects, "🔊  Sound",
+                    "Bật/tắt âm thanh phản hồi khi lưu, đổi trạng thái, ... "
+                    "(chưa hỗ trợ — dành cho tương lai).",
+                    "enable_sound", self.CAM)
+
+        # ═══════════════════════════════════════════════════════
+        # TAB 2 — CẤU HÌNH KHÁC (có scroll)
+        # ═══════════════════════════════════════════════════════
+        f_config = tk.Frame(container, bg=self.NEN)
+        tab_frames["config"] = f_config
+
+        # Canvas + Scrollbar cho scrollable frame
+        canvas_cfg = tk.Canvas(f_config, bg=self.NEN,
+                                highlightthickness=0, bd=0)
+        sb_cfg = ttk.Scrollbar(f_config, orient="vertical",
+                                command=canvas_cfg.yview)
+        canvas_cfg.configure(yscrollcommand=sb_cfg.set)
+        sb_cfg.pack(side="right", fill="y")
+        canvas_cfg.pack(side="left", fill="both", expand=True)
+
+        inner_cfg = tk.Frame(canvas_cfg, bg=self.NEN)
+        win_cfg = canvas_cfg.create_window((0, 0), window=inner_cfg, anchor="nw")
+        inner_cfg.bind("<Configure>",
+                       lambda e: canvas_cfg.configure(
+                           scrollregion=canvas_cfg.bbox("all")))
+        canvas_cfg.bind("<Configure>",
+                        lambda e: canvas_cfg.itemconfig(win_cfg, width=e.width))
+
+        # Mouse wheel — chỉ khi chuột trong vùng này
+        def _cfg_wheel(e):
+            canvas_cfg.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        def _cfg_lin(e):
+            canvas_cfg.yview_scroll(int(-1 if e.num == 4 else 1), "units")
+        def _cfg_enter(e):
+            canvas_cfg.bind_all("<MouseWheel>", _cfg_wheel)
+            canvas_cfg.bind_all("<Button-4>",   _cfg_lin)
+            canvas_cfg.bind_all("<Button-5>",   _cfg_lin)
+        def _cfg_leave(e):
+            canvas_cfg.unbind_all("<MouseWheel>")
+            canvas_cfg.unbind_all("<Button-4>")
+            canvas_cfg.unbind_all("<Button-5>")
+        canvas_cfg.bind("<Enter>", _cfg_enter)
+        canvas_cfg.bind("<Leave>", _cfg_leave)
+
+        tk.Label(inner_cfg, text="✏️  Sửa trực tiếp trong settings.json",
+                 bg=self.NEN, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(0, 8))
+
+        tk.Label(inner_cfg,
+                 text=f"File: {SETTINGS_FILE}",
+                 bg=self.NEN, fg=self.CHU_MO,
+                 font=("Consolas", 8), anchor="w"
+                 ).pack(fill="x", pady=(0, 12))
+
+        # ── Nhóm cấu hình ──
+        def make_cfg_group(parent, title, icon, items):
+            """items = list (key, label, value, desc)."""
+            tk.Label(parent, text=f"{icon}  {title}",
+                     bg=self.NEN, fg=self.TIM,
+                     font=("Segoe UI", 10, "bold"), anchor="w"
+                     ).pack(fill="x", pady=(8, 4))
+
+            box = tk.Frame(parent, bg=self.NEN2)
+            box.pack(fill="x", pady=(0, 6))
+
+            for key, label, value, desc in items:
+                row = tk.Frame(box, bg=self.NEN2, padx=12, pady=8)
+                row.pack(fill="x")
+
+                left = tk.Frame(row, bg=self.NEN2)
+                left.pack(side="left", fill="x", expand=True)
+
+                tk.Label(left, text=label, bg=self.NEN2, fg=self.CHU,
+                         font=("Segoe UI", 10, "bold"), anchor="w"
+                         ).pack(fill="x")
+                tk.Label(left, text=f"key: {key}", bg=self.NEN2, fg=self.CHU_MO,
+                         font=("Consolas", 8), anchor="w"
+                         ).pack(fill="x", pady=(1, 0))
+                if desc:
+                    tk.Label(left, text=desc, bg=self.NEN2, fg=self.CHU_MO,
+                             font=("Segoe UI", 8, "italic"),
+                             anchor="w", wraplength=340, justify="left"
+                             ).pack(fill="x", pady=(1, 0))
+
+                tk.Label(row, text=str(value), bg=self.NEN3, fg=self.XANH_LA,
+                         font=("Consolas", 10, "bold"),
+                         padx=10, pady=4
+                         ).pack(side="right", padx=(10, 0))
+
+            return box
+
+        # Nhóm 1: Điểm danh
+        make_cfg_group(inner_cfg, "Điểm danh", "📋", [
+            ("ly_do_mac_dinh",  "Lý do mặc định",
+             self.settings.get("ly_do_mac_dinh", "?"),
+             "Lý do gán khi HS vắng không nhập lý do"),
+            ("max_editable_week", "Tuần tối đa sửa",
+             self.settings.get("max_editable_week", "?"),
+             "Không cho sửa tuần vượt quá giá trị này"),
+        ])
+
+        # Nhóm 2: UI / hiệu năng
+        make_cfg_group(inner_cfg, "UI / Hiệu năng", "⚡", [
+            ("click_delay_ms", "Click delay",
+             f"{self.settings.get('click_delay_ms', '?')} ms",
+             "Đợi phân biệt single/double click (180ms ~ mặc định Windows)"),
+            ("filter_debounce_ms", "Filter debounce",
+             f"{self.settings.get('filter_debounce_ms', '?')} ms",
+             "Đợi sau khi gõ xong mới lọc (giảm lag khi gõ nhanh)"),
+            ("auto_save_interval_s", "Auto-save",
+             f"{self.settings.get('auto_save_interval_s', '?')} s",
+             "Tự động lưu sau mỗi N giây nếu có thay đổi"),
+        ])
+
+        # Nhóm 3: Dữ liệu / backup
+        make_cfg_group(inner_cfg, "Dữ liệu / Backup", "💾", [
+            ("backup_count", "Backup giữ lại",
+             f"{self.settings.get('backup_count', '?')} bản",
+             "Số file output.txt.bak.<timestamp> giữ lại gần nhất"),
+            ("undo_stack_size", "Undo stack",
+             f"{self.settings.get('undo_stack_size', '?')} bước",
+             "Số lần Ctrl+Z có thể hoàn tác"),
+        ])
+
+        # Nhóm 4: Sắp xếp
+        sort_key = self.settings.get("sort_key", "ma")
+        sort_dir = "Giảm dần" if self.settings.get("sort_desc", False) else "Tăng dần"
+        make_cfg_group(inner_cfg, "Sắp xếp", "🔤", [
+            ("sort_key",  "Cột sắp xếp mặc định",
+             {"ma": "Mã HS", "ten": "Họ tên", "lop": "Lớp"}.get(sort_key, sort_key),
+             "Bấm tiêu đề cột để đổi; giá trị này lưu lại cho lần sau"),
+            ("sort_desc", "Hướng sắp xếp", sort_dir, ""),
+        ])
+
+        # Nhóm 5: Đường dẫn file
+        tk.Label(inner_cfg, text="📁  Đường dẫn file", bg=self.NEN, fg=self.TIM,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(12, 4))
+
+        path_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=10)
+        path_box.pack(fill="x", pady=(0, 6))
+
+        for label, path in [
+            ("Data",          DATA_FILE),
+            ("Backup",        os.path.basename(DATA_FILE) + ".bak.*"),
+            ("Settings",      SETTINGS_FILE),
+            ("GitHub config", GH_CONFIG_FILE if os.path.exists(GH_CONFIG_FILE) else "(không có)"),
+            ("Log",           LOG_FILE),
+        ]:
+            row = tk.Frame(path_box, bg=self.NEN2)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=f"• {label}:", bg=self.NEN2, fg=self.CHU_MO,
+                     font=("Segoe UI", 9), anchor="w", width=14
+                     ).pack(side="left")
+            tk.Label(row, text=path, bg=self.NEN2, fg=self.CHU,
+                     font=("Consolas", 8), anchor="w", justify="left",
+                     wraplength=360).pack(side="left", fill="x", expand=True)
+
+        # Nút mở thư mục (chỉ Windows)
+        def open_folder():
+            try:
+                folder = SCRIPT_DIR
+                if sys.platform == "win32":
+                    os.startfile(folder)
+                elif sys.platform == "darwin":
+                    import subprocess
+                    subprocess.Popen(["open", folder])
+                else:
+                    import subprocess
+                    subprocess.Popen(["xdg-open", folder])
+            except Exception as e:
+                self.thong_bao(f"✗ Không mở được: {e}", self.DO)
+
+        tk.Button(inner_cfg, text="📂  Mở thư mục chứa file",
+                  bg=self.NEN3, fg=self.CHU,
+                  activebackground=self.XANH_DUONG, activeforeground="#1e1e2e",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 9, "bold"), padx=15, pady=6, bd=0,
+                  command=open_folder
+                  ).pack(pady=(6, 20))
+
+        # ═══════════════════════════════════════════════════════
+        # TAB 3 — UPDATE LOG
+        # ═══════════════════════════════════════════════════════
+        f_changelog = tk.Frame(container, bg=self.NEN)
+        tab_frames["changelog"] = f_changelog
+
+        # Scrollable text
+        log_frame = tk.Frame(f_changelog, bg=self.NEN)
+        log_frame.pack(fill="both", expand=True)
+
+        txt = tk.Text(log_frame, bg=self.NEN2, fg=self.CHU,
+                       insertbackground=self.CHU, relief="flat",
+                       font=("Consolas", 9), wrap="word",
+                       padx=12, pady=10)
+        sb_log = ttk.Scrollbar(log_frame, orient="vertical",
+                                command=txt.yview)
+        txt.configure(yscrollcommand=sb_log.set)
+        txt.pack(side="left", fill="both", expand=True)
+        sb_log.pack(side="right", fill="y")
+
+        # Tag màu
+        txt.tag_configure("version", foreground=self.XANH_LA,
+                          font=("Segoe UI", 12, "bold"))
+        txt.tag_configure("date",    foreground=self.CHU_MO,
+                          font=("Consolas", 8, "italic"))
+        txt.tag_configure("section", foreground=self.TIM,
+                          font=("Segoe UI", 10, "bold"))
+        txt.tag_configure("item",    foreground=self.CHU,
+                          font=("Consolas", 9))
+        txt.tag_configure("highlight", foreground=self.CAM,
+                          font=("Consolas", 9, "bold"))
+        txt.tag_configure("sep",     foreground=self.NEN3)
+
+        # Nội dung update log
+        CHANGELOG = [
+            ("v2.1", "2026-10-12", [
+                ("section", "🆕 Tính năng mới"),
+                ("item", "  • Thêm trường Tổ (1-4) cho HS"),
+                ("item", "  • Cột Tổ trong bảng danh sách"),
+                ("item", "  • Filter theo Tổ"),
+                ("item", "  • Hiển thị Tổ trong bảng điểm danh (T1 · Tên)"),
+                ("item", "  • Xuất CSV có cột Tổ"),
+                ("item", "  • Thống kê có cột Tổ"),
+            ]),
+            ("v2.0", "2026-10-12", [
+                ("section", "✨ Animation mới"),
+                ("item", "  • Window fade-in khi mở app"),
+                ("item", "  • Slide-up panel chi tiết khi click ô"),
+                ("item", "  • Progress bar khi push GitHub"),
+                ("item", "  • Typewriter cho status bar"),
+                ("item", "  • Row flash khi đổi trạng thái"),
+                ("item", "  • Pulse viền đỏ khi tuần bị khóa"),
+                ("item", "  • Confetti khi lưu thành công"),
+                ("item", "  • Popup fade cho Thống kê / Lịch sử"),
+                ("sep",  ""),
+                ("section", "🐛 Fix bug"),
+                ("item", "  • Fix crash key int/string trong weeks"),
+                ("item", "  • Fix merge data không mất dữ liệu"),
+                ("item", "  • Fix race condition khi push GitHub"),
+                ("item", "  • Fix UI đơ bằng threading"),
+                ("item", "  • Fix lỗi khi chưa chọn ô mà bấm lưu"),
+                ("sep",  ""),
+                ("section", "🚀 Tính năng"),
+                ("item", "  • Pull → Merge → Push tự động (union merge)"),
+                ("item", "  • Backup tự động trước mỗi lần ghi"),
+                ("item", "  • Lịch sử thay đổi GitHub (commits + diff)"),
+                ("item", "  • Undo/Redo stack (Ctrl+Z / Ctrl+Y)"),
+                ("item", "  • Báo cáo thống kê chuyên cần"),
+                ("item", "  • Export CSV"),
+                ("item", "  • Tìm kiếm theo Mã / Tên / Lớp"),
+                ("item", "  • Auto-save định kỳ"),
+                ("item", "  • Settings popup với toggle animation"),
+                ("item", "  • Log file app.log"),
+            ]),
+            ("v1.0", "2026-10-01", [
+                ("section", "📦 Bản đầu tiên"),
+                ("item", "  • Quản lý HS theo tuần (35 tuần, 2 học kỳ)"),
+                ("item", "  • Điểm danh / Lý do nghỉ / Lỗi vi phạm"),
+                ("item", "  • Sync GitHub (fetch + push)"),
+                ("item", "  • UI Catppuccin Mocha"),
+            ]),
+        ]
+
+        for i, (ver, date, items) in enumerate(CHANGELOG):
+            if i > 0:
+                txt.insert("end", "\n" + "─" * 55 + "\n\n", "sep")
+            txt.insert("end", f"{ver}\n", "version")
+            txt.insert("end", f"  {date}\n\n", "date")
+            for tag, line in items:
+                txt.insert("end", line + "\n", tag)
+
+        txt.config(state="disabled")
+
+        # ── Footer ──
+        footer = tk.Frame(win, bg=self.NEN2, height=52)
+        footer.pack(fill="x", side="bottom")
+        footer.pack_propagate(False)
+
+        tk.Label(footer, text="ManagementSystem v2.0 — Py 3.12+ / Tkinter",
+                 bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 8, "italic")).pack(side="left", padx=15)
+
+        tk.Button(footer, text="Đóng", command=win.destroy,
+                  bg=self.XANH_DUONG, fg="#1e1e2e",
+                  activebackground=self.XANH_DUONG_H,
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 9, "bold"),
+                  padx=20, pady=5, bd=0
+                  ).pack(side="right", padx=15, pady=10)
+
+        # ── Mở tab mặc định ──
+        switch_tab("effects")
+
     # ═══ Style ═══
     def _cai_dat_style(self):
         s = ttk.Style()
@@ -1030,9 +1552,38 @@ class UngDungQuanLy:
         # Header
         header = tk.Frame(self.root, bg=self.NEN2, height=64)
         header.pack(fill="x"); header.pack_propagate(False)
+
+        # ── Nút Settings (bánh răng) ở góc trên trái ──
+        self.settings_btn = tk.Button(
+            header, text="⚙",
+            bg=self.NEN3, fg=self.CHU,
+            activebackground=self.XANH_DUONG,
+            activeforeground="#1e1e2e",
+            relief="flat", cursor="hand2",
+            font=("Segoe UI", 14), bd=0,
+            padx=12, pady=2,
+            command=self.mo_settings)
+        self.settings_btn.pack(side="left", padx=(15, 0), pady=15)
+
+        # Hover mượt cho nút settings
+        def _s_on(e):
+            if getattr(self.settings_btn, "_anim_busy", False): return
+            self.settings_btn._anim_busy = True
+            animate_color(self.settings_btn, self.NEN3, self.XANH_DUONG,
+                          duration=140, steps=7, attr="bg",
+                          on_done=lambda: setattr(self.settings_btn, "_anim_busy", False))
+        def _s_off(e):
+            if getattr(self.settings_btn, "_anim_busy", False): return
+            self.settings_btn._anim_busy = True
+            animate_color(self.settings_btn, self.XANH_DUONG, self.NEN3,
+                          duration=180, steps=7, attr="bg",
+                          on_done=lambda: setattr(self.settings_btn, "_anim_busy", False))
+        self.settings_btn.bind("<Enter>", _s_on)
+        self.settings_btn.bind("<Leave>", _s_off)
+
         tk.Label(header, text="🎓  QUẢN LÝ HỌC SINH",
                  bg=self.NEN2, fg=self.CHU,
-                 font=("Segoe UI", 18, "bold")).pack(side="left", padx=20, pady=15)
+                 font=("Segoe UI", 18, "bold")).pack(side="left", padx=(10, 0), pady=15)
 
         gh_text  = "☁ GitHub …" if GH_CONFIG else "💾 Local only"
         gh_color = self.XANH_DUONG if GH_CONFIG else self.VANG
@@ -1053,6 +1604,14 @@ class UngDungQuanLy:
         self._tao_cot_trai(main)
         self._tao_cot_giua(main)
         self._tao_cot_phai(main)
+
+        # ── Progress bar (ẩn mặc định, chạy khi push GitHub) ──
+        self.progress_frame = tk.Frame(self.root, bg=self.NEN2, height=3)
+        self.progress_frame.pack(fill="x", side="bottom")
+        self.progress_frame.pack_propagate(False)
+
+        self.progress_bar = tk.Frame(self.progress_frame, bg=self.XANH_LA)
+        self.progress_bar.place(x=0, y=0, relheight=1, width=0)
 
         # Status bar
         self.thanh_trang_thai = tk.Label(self.root, text="Sẵn sàng",
@@ -1099,11 +1658,13 @@ class UngDungQuanLy:
         self.o_ma  = self._tao_o(form, "Mã học sinh")
         self.o_ten = self._tao_o(form, "Họ và tên")
         self.o_lop = self._tao_o(form, "Lớp")
+        self.o_to  = self._tao_o(form, "Tổ (1-4, để trống nếu chưa xếp)")
 
-        self._tao_nut(form, "➕  Thêm học sinh", self.them_hoc_sinh,
-                      self.XANH_DUONG, self.XANH_DUONG_H
-                      ).pack(fill="x", padx=20, pady=(20, 8))
-        self._tao_nut(form, "🗑  Xóa form (Esc)", self.xoa_form,
+        self.nut_them_sua = self._tao_nut(
+            form, "➕  Thêm học sinh", self.them_hoc_sinh,
+            self.XANH_DUONG, self.XANH_DUONG_H)
+        self.nut_them_sua.pack(fill="x", padx=20, pady=(20, 8))
+        self._tao_nut(form, "🔄  Làm mới form (Esc)", self.xoa_form,
                       self.NEN3, self.NEN3
                       ).pack(fill="x", padx=20, pady=(0, 20))
 
@@ -1149,15 +1710,17 @@ class UngDungQuanLy:
         khung_bang = tk.Frame(giua, bg=self.NEN)
         khung_bang.pack(fill="both", expand=True)
 
-        cols = ("ma", "ten", "lop")
+        cols = ("ma", "ten", "lop", "to")
         self.bang = ttk.Treeview(khung_bang, columns=cols, show="headings",
                                   selectmode="extended")
         self.bang.heading("ma",  text="Mã",     command=lambda: self.sap_xep("ma"))
         self.bang.heading("ten", text="Họ tên", command=lambda: self.sap_xep("ten"))
         self.bang.heading("lop", text="Lớp",    command=lambda: self.sap_xep("lop"))
-        self.bang.column("ma",  width=60,  anchor="center")
-        self.bang.column("ten", width=200, anchor="w")
-        self.bang.column("lop", width=90,  anchor="center")
+        self.bang.heading("to",  text="Tổ",     command=lambda: self.sap_xep("to"))
+        self.bang.column("ma",  width=55,  anchor="center")
+        self.bang.column("ten", width=180, anchor="w")
+        self.bang.column("lop", width=75,  anchor="center")
+        self.bang.column("to",  width=50,  anchor="center")
         self.bang.tag_configure("le",   background=self.NEN2)
         self.bang.tag_configure("chan", background=self.NEN)
 
@@ -1204,7 +1767,16 @@ class UngDungQuanLy:
         self.bien_tim_lop.trace_add("write", lambda *_: self._schedule_filter())
         tk.Entry(hang1, textvariable=self.bien_tim_lop,
                  bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
-                 relief="flat", width=10, font=("Segoe UI", 10)
+                 relief="flat", width=8, font=("Segoe UI", 10)
+                 ).pack(side="left", padx=(4, 10), ipady=4)
+
+        tk.Label(hang1, text="Tổ:", bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9)).pack(side="left")
+        self.bien_tim_to = tk.StringVar()
+        self.bien_tim_to.trace_add("write", lambda *_: self._schedule_filter())
+        tk.Entry(hang1, textvariable=self.bien_tim_to,
+                 bg=self.NEN3, fg=self.CHU, insertbackground=self.CHU,
+                 relief="flat", width=6, font=("Segoe UI", 10)
                  ).pack(side="left", padx=(4, 10), ipady=4)
 
         self._tao_nut(hang1, "🔍 Tìm", self.tim_kiem,
@@ -1262,7 +1834,8 @@ class UngDungQuanLy:
         self.nhan_tom_tat.pack(side="right")
 
         # Chọn tuần
-        khung_tuan = tk.Frame(khung, bg=self.NEN3)
+        self.khung_tuan = tk.Frame(khung, bg=self.NEN3)
+        khung_tuan = self.khung_tuan
         khung_tuan.pack(fill="x", padx=15, pady=(6, 6))
         tk.Label(khung_tuan, text="📅  Tuần:", bg=self.NEN3, fg=self.CHU,
                  font=("Segoe UI", 10, "bold")).pack(side="left", padx=(10, 6), pady=8)
@@ -1321,6 +1894,9 @@ class UngDungQuanLy:
         self.bang_dd.bind("<Button-1>",        self.click_diem_danh)
         self.bang_dd.bind("<Double-Button-1>", self.double_click_diem_danh)
         self.bang_dd.bind("<Motion>",          self.di_chuot_diem_danh)
+        # Spacer cho slide-up animation
+        self.khung_ct_spacer = tk.Frame(khung, bg=self.NEN2, height=0)
+        self.khung_ct_spacer.pack(fill="x")
 
         # Panel chi tiết
         khung_ct = tk.Frame(khung, bg=self.NEN3)
@@ -1410,8 +1986,28 @@ class UngDungQuanLy:
                       bg=bg, fg=fg, activebackground=hover, activeforeground=fg,
                       relief="flat", cursor="hand2",
                       font=("Segoe UI", 10, "bold"), bd=0)
-        b.bind("<Enter>", lambda e: b.configure(bg=hover))
-        b.bind("<Leave>", lambda e: b.configure(bg=bg))
+
+        anim_on = self.settings.get("enable_animation", True)
+
+        if not anim_on:
+            b.bind("<Enter>", lambda e: b.configure(bg=hover))
+            b.bind("<Leave>", lambda e: b.configure(bg=bg))
+            return b
+
+        def on_enter(e):
+            if getattr(b, "_anim_busy", False): return
+            b._anim_busy = True
+            animate_color(b, bg, hover, duration=140, steps=7, attr="bg",
+                          on_done=lambda: setattr(b, "_anim_busy", False))
+
+        def on_leave(e):
+            if getattr(b, "_anim_busy", False): return
+            b._anim_busy = True
+            animate_color(b, hover, bg, duration=180, steps=7, attr="bg",
+                          on_done=lambda: setattr(b, "_anim_busy", False))
+
+        b.bind("<Enter>", on_enter)
+        b.bind("<Leave>", on_leave)
         return b
 
     # ═══ Undo/Redo ═══
@@ -1570,30 +2166,127 @@ class UngDungQuanLy:
         t = tuan if tuan is not None else self.tuan_hien_tai
         return t <= self.settings["max_editable_week"]
 
+    def _set_form_mode(self, mode="add"):
+        """Đổi nút Thêm/Sửa tuỳ mode."""
+        if not hasattr(self, "nut_them_sua"): return
+        if mode == "edit":
+            self.nut_them_sua.config(
+                text="💾  Cập nhật học sinh",
+                bg=self.CAM, fg="#1e1e2e")
+        else:  # add
+            self.nut_them_sua.config(
+                text="➕  Thêm học sinh",
+                bg=self.XANH_DUONG, fg="#1e1e2e")
+
+        # Fix lại bind hover (nếu có animation)
+        anim_on = self.settings.get("enable_animation", True)
+        if anim_on:
+            hover = "#f5a76c" if mode == "edit" else self.XANH_DUONG_H
+            base  = self.CAM     if mode == "edit" else self.XANH_DUONG
+            self.nut_them_sua.unbind("<Enter>")
+            self.nut_them_sua.unbind("<Leave>")
+            def _on(e, b=base, h=hover):
+                if getattr(self.nut_them_sua, "_anim_busy", False): return
+                self.nut_them_sua._anim_busy = True
+                animate_color(self.nut_them_sua, b, h,
+                              duration=140, steps=7, attr="bg",
+                              on_done=lambda: setattr(
+                                  self.nut_them_sua, "_anim_busy", False))
+            def _off(e, b=base, h=hover):
+                if getattr(self.nut_them_sua, "_anim_busy", False): return
+                self.nut_them_sua._anim_busy = True
+                animate_color(self.nut_them_sua, h, b,
+                              duration=180, steps=7, attr="bg",
+                              on_done=lambda: setattr(
+                                  self.nut_them_sua, "_anim_busy", False))
+            self.nut_them_sua.bind("<Enter>", _on)
+            self.nut_them_sua.bind("<Leave>", _off)
+
     # ═══ HS CRUD ═══
     def them_hoc_sinh(self):
+        """Thêm mới nếu Mã chưa có, cập nhật nếu Mã đã tồn tại."""
         ma_str = self.o_ma.get().strip()
         ten    = self.o_ten.get().strip()
         lop    = self.o_lop.get().strip()
+        to     = self.o_to.get().strip()
+
         if not ma_str or not ten or not lop:
-            self.thong_bao("⚠ Nhập đầy đủ Mã, Tên, Lớp", self.VANG); return
-        try: ma = int(ma_str)
+            self.thong_bao("⚠ Nhập đầy đủ Mã, Tên, Lớp", self.VANG)
+            return
+        try:
+            ma = int(ma_str)
         except ValueError:
             self.thong_bao("⚠ Mã phải là số nguyên", self.DO)
-            self.o_ma.focus_set(); return
-        if ma in self.HocSinh:
-            self.thong_bao(f"⚠ Mã {ma} đã tồn tại", self.DO)
-            self.o_ma.focus_set(); return
+            self.o_ma.focus_set()
+            return
 
+        # Chuẩn hóa tổ
+        if to and to not in ("1", "2", "3", "4"):
+            self.thong_bao("⚠ Tổ phải là 1, 2, 3, 4 hoặc để trống", self.VANG)
+            self.o_to.focus_set()
+            return
+
+        to_str = f", Tổ {to}" if to else ""
+
+        # ── TRƯỜNG HỢP 1: ĐÃ TỒN TẠI → SỬA ──
+        if ma in self.HocSinh:
+            d = self.HocSinh[ma]
+            old_name  = d.get("name",  "")
+            old_class = d.get("class", "")
+            old_to    = d.get("to",    "")
+
+            # Không có gì đổi → thoát
+            if old_name == ten and old_class == lop and old_to == to:
+                self.thong_bao("⚠ Không có gì thay đổi", self.CHU_MO)
+                return
+
+            self._snapshot(f"Sửa HS {ma}")
+
+            # Cập nhật từng field
+            d["name"]  = ten
+            d["class"] = lop
+            d["to"]    = to
+
+            self.xoa_form()
+            self.cap_nhat_bang()
+            self.cap_nhat_diem_danh()
+
+            # Thông báo chi tiết cái gì đổi
+            changes = []
+            if old_name  != ten: changes.append(f"tên '{old_name}' → '{ten}'")
+            if old_class != lop: changes.append(f"lớp '{old_class}' → '{lop}'")
+            if old_to    != to:
+                o = old_to if old_to else "∅"
+                n = to      if to      else "∅"
+                changes.append(f"tổ {o} → {n}")
+
+            detail = " · ".join(changes) if changes else "cập nhật"
+            self.thong_bao(f"✓ Đã sửa mã {ma}: {detail}", self.CAM)
+
+            # Flash row vừa sửa
+            if self.settings.get("enable_animation", True):
+                self.bang.after(50, lambda: flash_row(
+                    self.bang, str(ma), color="#5a5a3f", duration=500))
+                self.bang_dd.after(50, lambda: flash_row(
+                    self.bang_dd, str(ma), color="#5a5a3f", duration=500))
+            return
+
+        # ── TRƯỜNG HỢP 2: CHƯA TỒN TẠI → THÊM MỚI ──
         self._snapshot(f"Thêm HS {ma}")
         self.HocSinh[ma] = {
-            "name": ten, "class": lop,
+            "name": ten, "class": lop, "to": to,
             "weeks": tao_du_lieu_tat_ca_tuan(),
         }
         self.xoa_form()
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
-        self.thong_bao(f"✓ Đã thêm: {ten} (Mã {ma}, {lop})", self.XANH_LA)
+        self.thong_bao(
+            f"✓ Đã thêm: {ten} (Mã {ma}, {lop}{to_str})", self.XANH_LA)
+
+        # Flash row mới
+        if self.settings.get("enable_animation", True):
+            self.bang.after(50, lambda: flash_row(
+                self.bang, str(ma), color="#3f5a3f", duration=500))
 
     def xoa_da_chon(self):
         sel = self.bang.selection()
@@ -1617,6 +2310,7 @@ class UngDungQuanLy:
             return
         self._saving = True
         self.thong_bao("💾 Đang pull → merge → push...", self.XANH_DUONG)
+        self._start_progress()          # ← THÊM DÒNG NÀY
 
         # Snapshot để thread dùng (tránh race condition)
         local_snapshot = deepcopy(self.HocSinh)
@@ -1628,7 +2322,15 @@ class UngDungQuanLy:
         def on_done(res):
             ok_local, ok_gh, err, merged = res
             self._saving = False
+            self._progress_running = False
+            self._progress_pos     = 0
+            if self._tw_job:
+                try: self.root.after_cancel(self._tw_job)
+                except Exception: pass
+                self._tw_job = None
+            self._slide_busy       = False
             self._dirty = False
+            self._stop_progress()
 
             # Update UI với bản merged (nếu có)
             if merged is not None:
@@ -1642,6 +2344,7 @@ class UngDungQuanLy:
             n = len(self.HocSinh)
             if ok_local and ok_gh:
                 self.thong_bao(f"✓ Pull-merge-push {n} HS lên GitHub", self.XANH_LA)
+                self._spawn_confetti()
             elif ok_local:
                 msg = f"✓ Local OK ({n} HS)"
                 if GH_CONFIG:
@@ -1652,6 +2355,15 @@ class UngDungQuanLy:
 
         def on_err(e):
             self._saving = False
+            self._progress_running = False
+            self._progress_pos     = 0
+            if self._tw_job:
+                try: self.root.after_cancel(self._tw_job)
+                except Exception: pass
+                self._tw_job = None
+            self._slide_busy       = False
+            self._dirty = False
+            self._stop_progress()
             self.thong_bao(f"✗ Lỗi: {e}", self.DO)
 
         self._async(task, on_success=on_done, on_error=on_err)
@@ -1660,9 +2372,12 @@ class UngDungQuanLy:
         self.o_ma.delete(0, "end")
         self.o_ten.delete(0, "end")
         self.o_lop.delete(0, "end")
+        self.o_to.delete(0, "end")
         # Clear selection bảng
         try: self.bang.selection_remove(self.bang.selection())
         except Exception: pass
+        # Reset nút về "Thêm"
+        self._set_form_mode("add")
         self.o_ma.focus_set()
 
     def tai_vao_form(self, event):
@@ -1672,7 +2387,13 @@ class UngDungQuanLy:
         self.o_ma.delete(0, "end");  self.o_ma.insert(0, vals[0])
         self.o_ten.delete(0, "end"); self.o_ten.insert(0, vals[1])
         self.o_lop.delete(0, "end"); self.o_lop.insert(0, vals[2])
-        self.thong_bao(f"Đã tải mã {vals[0]} vào form", self.CHU_MO)
+        to_val = vals[3] if len(vals) > 3 and vals[3] != "—" else ""
+        self.o_to.delete(0, "end");  self.o_to.insert(0, to_val)
+
+        # Đổi nút thành "Cập nhật"
+        self._set_form_mode("edit")
+        self.thong_bao(f"✏️ Đang sửa HS mã {vals[0]} — sửa xong bấm 'Cập nhật'",
+                       self.CAM)
 
     # ═══ Tìm kiếm ═══
     def _schedule_filter(self):
@@ -1701,6 +2422,9 @@ class UngDungQuanLy:
         if self.bien_tim_lop is not None:
             l = self.bien_tim_lop.get().strip().lower()
             if l and l not in str(d["class"]).lower(): return False
+        if self.bien_tim_to is not None:
+            to_q = self.bien_tim_to.get().strip()
+            if to_q and to_q != str(d.get("to", "")).strip(): return False
         return True
 
     def _co_filter(self):
@@ -1709,6 +2433,7 @@ class UngDungQuanLy:
             or (self.bien_tim_ma  and self.bien_tim_ma.get().strip())
             or (self.bien_tim_ten and self.bien_tim_ten.get().strip())
             or (self.bien_tim_lop and self.bien_tim_lop.get().strip())
+            or (self.bien_tim_to  and self.bien_tim_to.get().strip())
         )
 
     def tim_kiem(self):
@@ -1760,23 +2485,36 @@ class UngDungQuanLy:
         if self.bien_tim_ma:  self.bien_tim_ma.set("")
         if self.bien_tim_ten: self.bien_tim_ten.set("")
         if self.bien_tim_lop: self.bien_tim_lop.set("")
+        if self.bien_tim_to:  self.bien_tim_to.set("")
         self.cap_nhat_bang()
         self.thong_bao("Đã xóa filter", self.CHU_MO)
 
     # ═══ Bảng HS ═══
     def cap_nhat_bang(self):
         for item in self.bang.get_children(): self.bang.delete(item)
-        rows = [(ma, d["name"], d["class"])
+        rows = [(ma, d["name"], d["class"], str(d.get("to", "")))
                 for ma, d in self.HocSinh.items() if self._thoa_filter(ma, d)]
         key = self.khoa_sap_xep
-        if key == "ma":  rows.sort(key=lambda r: r[0],          reverse=self.dao_sap_xep)
-        elif key == "ten": rows.sort(key=lambda r: r[1].lower(), reverse=self.dao_sap_xep)
-        else:              rows.sort(key=lambda r: r[2].lower(), reverse=self.dao_sap_xep)
+        if key == "ma":
+            rows.sort(key=lambda r: r[0], reverse=self.dao_sap_xep)
+        elif key == "ten":
+            rows.sort(key=lambda r: r[1].lower(), reverse=self.dao_sap_xep)
+        elif key == "lop":
+            rows.sort(key=lambda r: r[2].lower(), reverse=self.dao_sap_xep)
+        elif key == "to":
+            # Sắp xếp tổ: số trước (1,2,3,4), rỗng sau cùng
+            def _to_key(r):
+                to = r[3]
+                return (1, "") if not to else (0, int(to) if to.isdigit() else 999)
+            rows.sort(key=_to_key, reverse=self.dao_sap_xep)
+        else:
+            rows.sort(key=lambda r: r[2].lower(), reverse=self.dao_sap_xep)
 
-        for i, (ma, ten, lop) in enumerate(rows):
+        for i, (ma, ten, lop, to) in enumerate(rows):
             tag = "le" if i % 2 else "chan"
+            to_disp = to if to else "—"
             self.bang.insert("", "end", iid=str(ma),
-                             values=(ma, ten, lop), tags=(tag,))
+                             values=(ma, ten, lop, to_disp), tags=(tag,))
 
         self.nhan_tong.config(text=f"Tổng: {len(self.HocSinh)}")
         if self.nhan_ket_qua is not None:
@@ -1819,12 +2557,14 @@ class UngDungQuanLy:
         for ma in ds_ma:
             d = self.HocSinh[ma]
             ten_hien = d["name"]
+            to_str = f"T{d['to']} · " if d.get("to") else ""
             tag = ()
             if ma_da_chon and ma not in ma_da_chon:
                 ten_hien = f"· {d['name']}"
             elif ma_da_chon and ma in ma_da_chon:
                 tag = ("focus",)
-            vals = [f"{ten_hien} ({d['class']})"] + [self._ky_hieu_o(ma, day) for day in THU]
+            vals = [f"{to_str}{ten_hien} ({d['class']})"] + \
+                   [self._ky_hieu_o(ma, day) for day in THU]
             self.bang_dd.insert("", "end", iid=str(ma), values=vals, tags=tag)
 
         tong = len(ds_ma)
@@ -1836,7 +2576,9 @@ class UngDungQuanLy:
     def _cap_nhat_hang_dd(self, ma):
         d = self.HocSinh.get(ma)
         if not d: return
-        vals = [f"{d['name']} ({d['class']})"] + [self._ky_hieu_o(ma, day) for day in THU]
+        to_str = f"T{d['to']} · " if d.get("to") else ""
+        vals = [f"{to_str}{d['name']} ({d['class']})"] + \
+               [self._ky_hieu_o(ma, day) for day in THU]
         try: self.bang_dd.item(str(ma), values=vals)
         except Exception: pass
 
@@ -1878,6 +2620,7 @@ class UngDungQuanLy:
             self.thong_bao(
                 f"⚠ Tuần {self.tuan_hien_tai} đã khóa (max={self.settings['max_editable_week']})",
                 self.DO)
+            self._pulse_locked(ma)
             return
         w = self._du_lieu_tuan(ma)
         if not w: return
@@ -1895,9 +2638,15 @@ class UngDungQuanLy:
         self._cap_nhat_hang_dd(ma)
         self._hien_thi_panel_ct(ma, day)
 
+        # ── Animation: flash row ──
+        if self.settings.get("enable_animation", True):
+            color = "#4a5b3f" if new_val else "#4a3f3f"
+            flash_row(self.bang_dd, str(ma), color=color, duration=380)
+
     def _hien_thi_panel_ct(self, ma, day):
         w = self._du_lieu_tuan(ma)
         if not w: return
+        self._slide_up_panel_ct()          # ← THÊM
         d = self.HocSinh[ma]
         self.o_hien_tai = (ma, day)
         att = w["attendance"].get(day, False)
@@ -1942,12 +2691,159 @@ class UngDungQuanLy:
         self.o_ly_do.config(state="normal")
         self.o_loi.delete("1.0", "end")
 
+    def _slide_up_panel_ct(self):
+        if not self.settings.get("enable_animation", True): return
+        if getattr(self, "_slide_busy", False): return
+        self._slide_busy = True
+
+        spacer = self.khung_ct_spacer
+        steps = 8
+        try:
+            spacer.configure(height=28)
+        except Exception:
+            self._slide_busy = False
+            return
+
+        def step(i):
+            try:
+                if i > steps:
+                    spacer.configure(height=0)
+                    self._slide_busy = False
+                    return
+                k = i / steps
+                k = 1 - (1 - k) ** 3
+                spacer.configure(height=int(_lerp(28, 0, k)))
+                spacer.after(16, lambda: step(i + 1))
+            except Exception:
+                self._slide_busy = False
+        step(1)
+
+    def _pulse_locked(self, ma=None):
+        if not self.settings.get("enable_animation", True): return
+
+        if ma is not None:
+            for i in range(3):
+                self.bang_dd.after(
+                    i * 140,
+                    lambda m=ma: flash_row(self.bang_dd, str(m),
+                                            color="#5b2d3f", duration=120)
+                )
+        try:
+            orig = self.khung_tuan.cget("bg")
+            pulse = "#5b2d3f"
+            def do_pulse():
+                animate_color(self.khung_tuan, orig, pulse,
+                              duration=100, steps=5, attr="bg",
+                              on_done=lambda: animate_color(
+                                  self.khung_tuan, pulse, orig,
+                                  duration=220, steps=7, attr="bg"))
+            self.khung_tuan.after(1, do_pulse)
+        except Exception:
+            pass
+
+    def _spawn_confetti(self, count=90):
+        if not self.settings.get("enable_confetti", True): return
+        if not self.settings.get("enable_animation", True): return
+
+        try:
+            root = self.root
+            root.update_idletasks()
+            rx, ry = root.winfo_rootx(), root.winfo_rooty()
+            rw, rh = root.winfo_width(), root.winfo_height()
+        except Exception:
+            return
+
+        try:
+            overlay = tk.Toplevel(root)
+            overlay.overrideredirect(True)
+            overlay.geometry(f"{rw}x{rh}+{rx}+{ry}")
+            overlay.attributes("-topmost", True)
+            overlay.attributes("-transparentcolor", "#010101")
+            overlay.configure(bg="#010101")
+        except Exception:
+            try: overlay.destroy()
+            except Exception: pass
+            return   # Linux/macOS không hỗ trợ → bỏ qua
+
+        canvas = tk.Canvas(overlay, bg="#010101",
+                            highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+
+        colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af",
+                  "#cba6f7", "#fab387", "#74c7ec", "#eba0ac"]
+
+        particles = []
+        for _ in range(count):
+            x = rw // 2 + random.randint(-rw//3, rw//3)
+            y = rh // 3 + random.randint(-rh//6, rh//6)
+            size = random.randint(5, 12)
+            try:
+                pid = canvas.create_rectangle(
+                    x, y, x+size, y+size,
+                    fill=random.choice(colors), outline="")
+            except Exception:
+                continue
+            particles.append({
+                "id": pid, "x": x, "y": y,
+                "vx": random.uniform(-7, 7),
+                "vy": random.uniform(-16, -5),
+                "size": size,
+                "life": 0,
+                "max_life": random.randint(70, 130),
+            })
+
+        if not particles:
+            try: overlay.destroy()
+            except Exception: pass
+            return
+
+        def animate():
+            alive = 0
+            for p in particles:
+                p["life"] += 1
+                if p["life"] > p["max_life"]:
+                    try: canvas.delete(p["id"])
+                    except Exception: pass
+                    continue
+                p["vy"] += 0.5
+                p["vx"] *= 0.995
+                p["x"] += p["vx"]
+                p["y"] += p["vy"]
+                if p["y"] > rh + 60:
+                    try: canvas.delete(p["id"])
+                    except Exception: pass
+                    continue
+                try:
+                    canvas.coords(p["id"],
+                                  p["x"], p["y"],
+                                  p["x"]+p["size"], p["y"]+p["size"])
+                    if p["life"] % 10 == 0:
+                        canvas.itemconfigure(p["id"],
+                                              fill=random.choice(colors))
+                except Exception:
+                    continue
+                alive += 1
+            if alive > 0:
+                overlay.after(16, animate)
+            else:
+                try: overlay.destroy()
+                except Exception: pass
+
+        def _auto_kill():
+            try:
+                if overlay.winfo_exists(): overlay.destroy()
+            except Exception: pass
+        overlay.after(6000, _auto_kill)
+        animate()
+
     def luu_ly_do(self):
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
-        if not self._tuan_co_the_sua():
-            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
+            self._pulse_locked(ma)
+            return
         w = self._du_lieu_tuan(ma)
         if not w: return
         d = self.HocSinh[ma]
@@ -1960,12 +2856,17 @@ class UngDungQuanLy:
         mau = self.DO if text == self.settings["ly_do_mac_dinh"] else self.VANG
         self.thong_bao(f"✓ Đã lưu {d['name']} — T{self.tuan_hien_tai} {day}: {text}", mau)
 
+        if self.settings.get("enable_animation", True):
+            flash_row(self.bang_dd, str(ma), color="#4a4a5b", duration=380)
+
     def danh_dau_khong_phep(self):
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
-        if not self._tuan_co_the_sua():
-            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
+            self._pulse_locked(ma)
+            return
         w = self._du_lieu_tuan(ma)
         if not w: return
         d = self.HocSinh[ma]
@@ -1981,9 +2882,11 @@ class UngDungQuanLy:
     def luu_loi(self):
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
-        if not self._tuan_co_the_sua():
-            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
+            self._pulse_locked(ma)
+            return
         w = self._du_lieu_tuan(ma)
         if not w: return
         d = self.HocSinh[ma]
@@ -1997,12 +2900,17 @@ class UngDungQuanLy:
         else:
             self.thong_bao(f"✓ Đã xóa lỗi {d['name']} — T{self.tuan_hien_tai} {day}", self.XANH_LA)
 
+        if self.settings.get("enable_animation", True):
+            flash_row(self.bang_dd, str(ma), color="#5b4a3f", duration=380)
+
     def xoa_loi(self):
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
-        if not self._tuan_co_the_sua():
-            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
         ma, day = self.o_hien_tai
+        if not self._tuan_co_the_sua():
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
+            self._pulse_locked(ma)
+            return
         w = self._du_lieu_tuan(ma)
         if not w: return
         d = self.HocSinh[ma]
@@ -2012,10 +2920,15 @@ class UngDungQuanLy:
         self._cap_nhat_hang_dd(ma)
         self.thong_bao(f"✓ Đã xóa lỗi {d['name']} — T{self.tuan_hien_tai} {day}", self.XANH_LA)
 
+        if self.settings.get("enable_animation", True):
+            flash_row(self.bang_dd, str(ma), color="#5b4a3f", duration=380)
+
     # ═══ Bulk ═══
     def danh_dau_tat_ca(self):
         if not self._tuan_co_the_sua():
-            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
+            self._pulse_locked()
+            return
         sel = self.bang.selection()
         ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel] if sel \
                 else list(self.HocSinh.keys())
@@ -2033,7 +2946,9 @@ class UngDungQuanLy:
 
     def bo_danh_dau_tat_ca(self):
         if not self._tuan_co_the_sua():
-            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO); return
+            self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
+            self._pulse_locked()
+            return
         sel = self.bang.selection()
         ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel] if sel \
                 else list(self.HocSinh.keys())
@@ -2055,6 +2970,8 @@ class UngDungQuanLy:
         win.title("Báo cáo thống kê")
         win.configure(bg=self.NEN)
         win.geometry("800x600")
+        if self.settings.get("enable_animation", True):
+            fade_in_window(win, duration=200, steps=10)
 
         tk.Label(win, text="📊  THỐNG KÊ CHUYÊN CẦN",
                  bg=self.NEN, fg=self.XANH_DUONG,
@@ -2063,16 +2980,18 @@ class UngDungQuanLy:
         frame = tk.Frame(win, bg=self.NEN)
         frame.pack(fill="both", expand=True, padx=15, pady=10)
 
-        cols = ("name", "class", "present", "excused", "absent", "rate", "errors")
+        cols = ("name", "class", "to", "present", "excused",
+                "absent", "rate", "errors")
         tv = ttk.Treeview(frame, columns=cols, show="headings")
         headers = [
-            ("name",    "Học sinh",   200),
-            ("class",   "Lớp",         80),
-            ("present", "Có mặt",      80),
-            ("excused", "Có phép",     80),
-            ("absent",  "Không phép",  90),
-            ("rate",    "Tỉ lệ",        80),
-            ("errors",  "Lỗi",          60),
+            ("name",    "Học sinh",   180),
+            ("class",   "Lớp",         70),
+            ("to",      "Tổ",          45),
+            ("present", "Có mặt",      75),
+            ("excused", "Có phép",     75),
+            ("absent",  "Không phép",  85),
+            ("rate",    "Tỉ lệ",        75),
+            ("errors",  "Lỗi",          55),
         ]
         for k, txt, w in headers:
             tv.heading(k, text=txt)
@@ -2104,11 +3023,11 @@ class UngDungQuanLy:
                         n_err += 1
             total = n_present + n_excused + n_absent
             rate = (n_present / total * 100) if total else 0
-            rows.append((d["name"], d["class"], n_present, n_excused,
+            rows.append((d["name"], d["class"], d.get("to", "") or "—",
+                          n_present, n_excused,
                           n_absent, f"{rate:.1f}%", n_err))
 
-        rows.sort(key=lambda r: -r[5].__str__().__len__())  # placeholder
-        rows.sort(key=lambda r: float(r[5].rstrip("%")))    # sort by rate asc
+        rows.sort(key=lambda r: float(r[6].rstrip("%")))
         rows.reverse()
 
         for i, r in enumerate(rows):
@@ -2133,12 +3052,13 @@ class UngDungQuanLy:
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as f:
                 wr = csv.writer(f)
-                wr.writerow(["Mã", "Họ tên", "Lớp", "Tuần"] + THU)
+                wr.writerow(["Mã", "Họ tên", "Lớp", "Tổ", "Tuần"] + THU)
                 for ma in sorted(self.HocSinh.keys()):
                     d = self.HocSinh[ma]
                     w = self._du_lieu_tuan(ma)
                     ky_hieu = [self._ky_hieu_o(ma, day) for day in THU]
                     wr.writerow([ma, d["name"], d["class"],
+                                  d.get("to", ""),
                                   f"Tuần {self.tuan_hien_tai}"] + ky_hieu)
             self.thong_bao(f"✓ Đã xuất CSV: {os.path.basename(path)}", self.XANH_LA)
         except Exception as e:
@@ -2156,6 +3076,8 @@ class UngDungQuanLy:
         win.configure(bg=self.NEN)
         win.geometry("1000x720")
         win.minsize(820, 600)
+        if self.settings.get("enable_animation", True):
+            fade_in_window(win, duration=200, steps=10)
 
         # ── Header ──
         header = tk.Frame(win, bg=self.NEN2, height=44)
@@ -2357,9 +3279,82 @@ class UngDungQuanLy:
             self.luu_ngay()
         self._schedule_auto_save()
 
+    def _start_progress(self):
+        if self._progress_running: return
+        self._progress_running = True
+        self._progress_pos = 0
+        self._progress_step()
+
+    def _stop_progress(self):
+        self._progress_running = False
+        try: self.progress_bar.place_configure(width=0)
+        except Exception: pass
+
+    def _progress_step(self):
+        if not self._progress_running: return
+        try:
+            w = self.progress_frame.winfo_width()
+            if w <= 1: w = 800
+        except Exception:
+            w = 800
+        bar_w = int(w * 0.28)
+        self._progress_pos = (self._progress_pos + max(8, w // 60)) % (w + bar_w)
+        x = self._progress_pos - bar_w
+        try:
+            self.progress_bar.place_configure(x=x, width=bar_w)
+        except Exception:
+            return
+        self.root.after(16, self._progress_step)
+
     # ═══ Status ═══
     def thong_bao(self, msg, mau=None):
-        self.thanh_trang_thai.config(text=msg, fg=mau or self.CHU_MO)
+        color = mau or self.CHU_MO
+
+        # Hủy typewriter cũ
+        if self._tw_job:
+            try: self.root.after_cancel(self._tw_job)
+            except Exception: pass
+            self._tw_job = None
+
+        anim_on = self.settings.get("enable_animation", True)
+
+        if not anim_on:
+            self.thanh_trang_thai.config(text=msg, fg=color)
+        else:
+            # Typewriter: hiện từng ký tự
+            chars = list(msg)
+            try:
+                self.thanh_trang_thai.config(text="", fg=color)
+            except Exception:
+                return
+
+            def type_next(i):
+                if i > len(chars):
+                    self._tw_job = None
+                    return
+                try:
+                    self.thanh_trang_thai.config(text="".join(chars[:i]))
+                except Exception:
+                    self._tw_job = None
+                    return
+                self._tw_job = self.root.after(12, lambda: type_next(i + 1))
+
+            type_next(1)
+
+        # Pulse nhẹ
+        if anim_on:
+            try:
+                orig = self.thanh_trang_thai.cget("bg")
+                pulse = "#3a3d55"
+                def do_pulse():
+                    animate_color(self.thanh_trang_thai, orig, pulse,
+                                  duration=90, steps=5, attr="bg",
+                                  on_done=lambda: animate_color(
+                                      self.thanh_trang_thai, pulse, orig,
+                                      duration=220, steps=8, attr="bg"))
+                self.thanh_trang_thai.after(1, do_pulse)
+            except Exception:
+                pass
 
     def khi_dong(self):
         if self.hen_gio_click:
