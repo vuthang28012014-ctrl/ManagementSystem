@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "updated_at": "2026-10-12T04:20:08.645188+00:00"
+    "updated_at": "2026-10-12T04:20:45.083774+00:00"
   },
   "34": {
     "name": "Trịnh Đức Anh",
@@ -1174,22 +1174,22 @@
       },
       "6": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
-          "T4": "Không phép",
-          "T5": "Không phép",
-          "T6": "Không phép",
-          "T7": "Không phép",
-          "CN": "Không phép"
+          "T2": "",
+          "T3": "",
+          "T4": "",
+          "T5": "",
+          "T6": "",
+          "T7": "",
+          "CN": ""
         },
         "errors": {
           "T2": "",
@@ -3221,8 +3221,8 @@
           "T4": true,
           "T5": true,
           "T6": true,
-          "T7": false,
-          "CN": false
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "",
