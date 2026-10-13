@@ -44,11 +44,19 @@ import csv
 import threading
 import traceback
 import random
+import math
 from datetime import datetime, timezone
 from collections import deque
 from copy import deepcopy
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import tkinter.font as tkfont
+# Thử import Pillow cho blur overlay
+try:
+    from PIL import Image, ImageGrab, ImageFilter, ImageTk
+    PIL_OK = True
+except ImportError:
+    PIL_OK = False
 
 # ═══════════════════════════════════════════════════════════════
 # PATHS & CONSTANTS
@@ -206,6 +214,48 @@ def flash_row(tree, iid, color="#45475a", duration=420):
     except Exception:
         pass
 
+def _make_cover_image(w, h, hex_color, alpha):
+    """Tạo PhotoImage 1 màu hex với alpha 0-255 (cần Pillow)."""
+    if not PIL_OK or alpha < 0:
+        return None
+    try:
+        rgb = _hex_to_rgb(hex_color)
+        img = Image.new("RGBA", (w, h), (rgb[0], rgb[1], rgb[2], alpha))
+        return ImageTk.PhotoImage(img)
+    except Exception:
+        return None
+
+def _grab_widget_image(widget, w, h):
+    """Chụp ảnh widget từ màn hình. Trả PIL.Image (RGB) hoặc None."""
+    if not PIL_OK or widget is None:
+        return None
+    try:
+        widget.update_idletasks()
+        rx = widget.winfo_rootx()
+        ry = widget.winfo_rooty()
+        img = ImageGrab.grab(bbox=(rx, ry, rx + w, ry + h))
+        return img.convert("RGB")
+    except Exception as e:
+        log_warn(f"Grab widget fail: {e}")
+        return None
+
+
+def _blend_card_with_bg(img, w, h, alpha, bg_hex):
+    """
+    Blend ảnh card với màu nền.
+    alpha = 1 → ảnh rõ hoàn toàn
+    alpha = 0 → chỉ thấy màu nền
+    """
+    if not PIL_OK or img is None:
+        return None
+    try:
+        rgb = _hex_to_rgb(bg_hex)
+        bg = Image.new("RGB", (w, h), rgb)
+        a = max(0.0, min(1.0, alpha))
+        blended = Image.blend(bg, img, a)
+        return ImageTk.PhotoImage(blended)
+    except Exception:
+        return None
 # ═══════════════════════════════════════════════════════════════
 # GITHUB SYNC MODULE
 # ═══════════════════════════════════════════════════════════════
@@ -1004,6 +1054,12 @@ class UngDungQuanLy:
         self._progress_pos     = 0
         self._tw_job           = None
         self._slide_busy       = False
+        self._settings_overlay = None
+        self._settings_shadow  = None
+        self._settings_blur    = None
+        self._settings_cover   = None
+        self._settings_card_w  = 620
+        self._settings_card_h  = 660
 
         # Undo
         self.undo_stack = UndoStack(self.settings["undo_stack_size"])
@@ -1096,74 +1152,396 @@ class UngDungQuanLy:
         self.root.bind_all("<Control-Z>", lambda e: self.undo())
         self.root.bind_all("<Control-y>", lambda e: self.redo())
         self.root.bind_all("<Control-Y>", lambda e: self.redo())
-        self.root.bind_all("<Escape>",    lambda e: self._xoa_panel_ct())
+        self.root.bind_all("<Escape>",    lambda e: self._on_escape())
+
+    def _on_escape(self):
+        """Esc: đóng settings nếu đang mở, ngược lại xóa panel chi tiết."""
+        if self._settings_overlay is not None:
+            fn = getattr(self, "_close_settings_fn", None)
+            if fn: fn()
+            return
+        self._xoa_panel_ct()
 
     def _focus_tim(self):
         if hasattr(self, "o_tim_ma") and self.o_tim_ma:
             self.o_tim_ma.focus_set()
             self.o_tim_ma.selection_range(0, "end")
 
-    def mo_settings(self):
-        """Popup cài đặt — toggle animation/confetti + cấu hình + update log."""
-        win = tk.Toplevel(self.root)
-        win.title("⚙ Cài đặt")
-        win.configure(bg=self.NEN)
-        win.geometry("560x680")
-        win.minsize(500, 560)
-        win.transient(self.root)
-        if self.settings.get("enable_animation", True):
-            fade_in_window(win, duration=180, steps=8)
+    def mo_settings_inline(self):
+        """Panel settings nổi giữa cửa sổ chính (không tạo Toplevel)."""
+        # Đóng panel khác nếu đang mở (stats / history)
+        if self._settings_overlay is not None:
+            fn = getattr(self, "_close_settings_fn", None)
+            if fn:
+                try: fn()
+                except Exception: pass
+            try: self.root.update_idletasks()
+            except Exception: pass
+        # ═══ Hàm đóng — có fade out ═══
+        def close_settings():
+            def _do_destroy():
+                # Xóa hết widget con của settings
+                for attr in ("_settings_cover",
+                             "_settings_overlay",
+                             "_settings_shadow",
+                             "_settings_blur"):
+                    w = getattr(self, attr, None)
+                    if w is not None:
+                        try: w.destroy()
+                        except Exception: pass
+                        setattr(self, attr, None)
+                # Force cập nhật UI để widget biến mất ngay
+                try: self.root.update_idletasks()
+                except Exception: pass
 
-        # ── Header ──
-        h = tk.Frame(win, bg=self.NEN2, height=52)
+            # Fade out — chụp card rồi blend với màu nền
+            if self.settings.get("enable_animation", True) and PIL_OK:
+                try:
+                    cw = getattr(self, "_settings_card_w", 620)
+                    ch = getattr(self, "_settings_card_h", 660)
+                    card_obj = getattr(self, "_settings_overlay", None)
+
+                    # Xóa cover cũ nếu đang có
+                    old_cover = getattr(self, "_settings_cover", None)
+                    if old_cover is not None:
+                        try: old_cover.destroy()
+                        except Exception: pass
+                        self._settings_cover = None
+
+                    # Chụp card
+                    img_card = None
+                    if card_obj is not None:
+                        try:
+                            card_obj.update_idletasks()
+                            self.root.update()
+                        except Exception:
+                            pass
+                        img_card = _grab_widget_image(card_obj, cw, ch)
+
+                    if img_card is not None:
+                        # Ẩn card thật
+                        try: card_obj.place_forget()
+                        except Exception: pass
+
+                        cover = tk.Label(self.root, borderwidth=0, bg=self.NEN)
+                        cover.place(relx=0.5, rely=0.5, anchor="center",
+                                    width=cw, height=ch)
+                        cover.lift()
+                        blur = getattr(self, "_settings_blur", None)
+                        if blur is not None:
+                            try: blur.lift()
+                            except Exception: pass
+                        cover.lift()
+                        self._settings_cover = cover
+
+                        total = 12
+                        def _fade_out_step(i):
+                            if i > total:
+                                try: cover.destroy()
+                                except Exception: pass
+                                self._settings_cover = None
+                                _do_destroy()
+                                return
+                            t = i / total
+                            k = t * t * (3 - 2 * t)
+                            # alpha card: 1 → 0
+                            alpha = 1.0 - k
+                            photo = _blend_card_with_bg(
+                                img_card, cw, ch, alpha, self.NEN)
+                            if photo:
+                                cover.configure(image=photo)
+                                cover.image = photo
+                            self.root.after(14, lambda: _fade_out_step(i + 1))
+
+                        self.root.after(0, lambda: _fade_out_step(0))
+                        return
+                except Exception as e:
+                    log_warn(f"Fade out fail: {e}")
+
+            # Fallback: destroy ngay
+            _do_destroy()
+        
+        # ═══ Blur overlay — chụp màn hình + làm mờ bằng Pillow ═══
+        card_w, card_h = 620, 660
+
+        # Chờ 1 frame để UI vẽ xong trước khi chụp
+        self.root.update_idletasks()
+
+        blur_ok = False
+        if PIL_OK:
+            try:
+                # Toạ độ cửa sổ chính trên màn hình
+                rx = self.root.winfo_rootx()
+                ry = self.root.winfo_rooty()
+                rw = self.root.winfo_width()
+                rh = self.root.winfo_height()
+
+                # Chụp cửa sổ
+                img = ImageGrab.grab(bbox=(rx, ry, rx + rw, ry + rh))
+
+                # Làm mờ Gauss
+                img = img.filter(ImageFilter.GaussianBlur(radius=12))
+
+                # Phủ lớp tối nhẹ để card nổi hơn
+                img = img.convert("RGBA")
+                dark = Image.new("RGBA", img.size, (10, 10, 20, 90))
+                img = Image.alpha_composite(img, dark).convert("RGB")
+
+                # Convert sang PhotoImage và hiển thị
+                photo = ImageTk.PhotoImage(img)
+                blur_label = tk.Label(self.root, image=photo,
+                                       borderwidth=0, highlightthickness=0)
+                blur_label.image = photo   # giữ reference tránh bị GC
+                blur_label.place(x=0, y=0, relwidth=1, relheight=1)
+                blur_label.lift()
+                blur_label.bind("<Button-1>", lambda e: close_settings())
+                blur_label.bind("<MouseWheel>", lambda e: "break")
+                blur_label.bind("<Button-4>",   lambda e: "break")
+                blur_label.bind("<Button-5>",   lambda e: "break")
+                self._settings_blur = blur_label
+                blur_ok = True
+            except Exception as e:
+                log_warn(f"Không blur được: {e}")
+
+        # ── Fallback nếu không có Pillow / chụp lỗi ──
+        if not blur_ok:
+            overlay = tk.Frame(self.root, bg="#1a1a26")
+            overlay.place(x=0, y=0, relwidth=1, relheight=1)
+            overlay.lift()
+            overlay.bind("<Button-1>", lambda e: close_settings())
+            overlay.bind("<MouseWheel>", lambda e: "break")
+            self._settings_blur = overlay
+
+        # ── Shadow (đặt OFFSCREEN — user không thấy lúc build UI) ──
+        shadow = tk.Frame(self.root, bg="#0a0a14")
+        shadow.place(relx=0.5, rely=-2.0, anchor="center",
+                     width=card_w + 8, height=card_h + 8)
+        shadow.lift()
+        shadow.bind("<Button-1>", lambda e: None)
+        self._settings_shadow = shadow
+
+        # ── Card giữa — viền xanh (đặt OFFSCREEN lúc đầu) ──
+        card = tk.Frame(self.root, bg=self.NEN,
+                        highlightthickness=2,
+                        highlightbackground=self.XANH_DUONG)
+        card.place(relx=0.5, rely=-2.0, anchor="center",
+                   width=card_w, height=card_h)
+        card.pack_propagate(False)
+        card.lift()
+        self._settings_overlay = card
+        self._settings_card_w  = card_w
+        self._settings_card_h  = card_h
+
+
+
+        # ═══ Header card ═══
+        h = tk.Frame(card, bg=self.NEN2, height=52)
         h.pack(fill="x"); h.pack_propagate(False)
         tk.Label(h, text="⚙  CÀI ĐẶT", bg=self.NEN2, fg=self.TIM,
                  font=("Segoe UI", 14, "bold")).pack(side="left", padx=18, pady=14)
 
-        # ── Tab bar ──
-        tab_bar = tk.Frame(win, bg=self.NEN2, height=38)
-        tab_bar.pack(fill="x"); tab_bar.pack_propagate(False)
+        # Nút X đóng
+        close_btn = tk.Button(h, text="✕", bg=self.NEN2, fg=self.CHU_MO,
+                              activebackground=self.DO, activeforeground="#1e1e2e",
+                              relief="flat", cursor="hand2",
+                              font=("Segoe UI", 11, "bold"), bd=0,
+                              padx=12, pady=0)
+        close_btn.pack(side="right", padx=8, pady=8)
 
-        self._settings_tab = tk.StringVar(value="effects")
+        # ═══ Tab bar — dùng Canvas + 1 indicator oval duy nhất ═══
+        TAB_H = 40
+        tab_bar = tk.Canvas(card, bg=self.NEN2, height=TAB_H,
+                             highlightthickness=0, bd=0)
+        tab_bar.pack(fill="x")
 
         tab_defs = [
-            ("effects", "🎬 Hiệu ứng"),
-            ("config",  "📋 Cấu hình khác"),
+            ("effects",   "🎬 Hiệu ứng"),
+            ("config",    "📋 Cấu hình khác"),
             ("changelog", "📝 Update log"),
         ]
-        tab_btns = {}
+        tab_btns   = {}    # key -> {x, y, w, h, text_id}
+        tab_frames = {}
+
+        # Indicator — rounded rectangle (vẽ TRƯỚC để text nằm trên)
+        INDICATOR_COLOR = "#e8e8f0"    # trắng hơi xám — đổi "#ffffff" nếu muốn trắng tinh
+        INDICATOR_RADIUS = 10          # bán kính bo góc (px)
+
+        def _rr_coords(x1, y1, x2, y2, r=INDICATOR_RADIUS):
+            """Trả list toạ độ cho rounded rectangle (polygon smooth=True)."""
+            # Giới hạn r không vượt nửa width/height
+            max_r = min(abs(x2 - x1) / 2, abs(y2 - y1) / 2)
+            r = min(r, max_r)
+            # 20 điểm, mỗi góc có 2 điểm trùng để bo cong
+            return (
+                x1+r, y1,
+                x1+r, y1,
+                x2-r, y1,
+                x2-r, y1,
+                x2, y1,
+                x2, y1+r,
+                x2, y1+r,
+                x2, y2-r,
+                x2, y2-r,
+                x2, y2,
+                x2-r, y2,
+                x2-r, y2,
+                x1+r, y2,
+                x1+r, y2,
+                x1, y2,
+                x1, y2-r,
+                x1, y2-r,
+                x1, y1+r,
+                x1, y1+r,
+                x1, y1,
+            )
+
+        indicator_id = tab_bar.create_polygon(
+            *_rr_coords(0, 0, 0, 0),
+            fill=INDICATOR_COLOR, outline="", smooth=True,
+        )
+
+        # Font để đo width chính xác
+        _tab_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        PADDING_X = 16
+        GAP       = 6
+        BTN_H     = 30
+        BTN_Y     = (TAB_H - BTN_H) // 2
+        cursor_x  = 6
+
+        for key, label in tab_defs:
+            text_w = _tab_font.measure(label)
+            w = text_w + PADDING_X * 2
+            cx = cursor_x + w // 2
+            cy = BTN_Y + BTN_H // 2
+
+            text_id = tab_bar.create_text(cx, cy, text=label,
+                                            font=_tab_font,
+                                            fill=self.CHU_MO)
+
+            tab_btns[key] = {
+                "x": cursor_x, "y": BTN_Y,
+                "w": w, "h": BTN_H,
+                "text_id": text_id,
+            }
+            cursor_x += w + GAP
+
+        # ── State ──
+        current_tab = {"key": None}
+        _ind_anim   = {"job": None}
+
+        def _set_text_colors(active_key):
+            for k, info in tab_btns.items():
+                try:
+                    if k == active_key:
+                        tab_bar.itemconfigure(info["text_id"], fill="#1e1e2e")
+                    else:
+                        tab_bar.itemconfigure(info["text_id"], fill=self.CHU_MO)
+                except Exception:
+                    pass
+
+        def _move_indicator(old_key, new_key):
+            # Hủy animation đang chạy
+            if _ind_anim["job"]:
+                try: self.root.after_cancel(_ind_anim["job"])
+                except Exception: pass
+                _ind_anim["job"] = None
+
+            if new_key not in tab_btns:
+                return
+
+            n = tab_btns[new_key]
+            nx = n["x"] + n["w"] // 2
+            ny = n["y"] + n["h"] // 2
+            nw = n["w"]
+            nh = n["h"]
+
+            # Lần đầu hoặc không có tab cũ → hiện ngay
+            if old_key is None or old_key not in tab_btns:
+                try:
+                    tab_bar.coords(indicator_id, *_rr_coords(
+                        nx - nw / 2, ny - nh / 2,
+                        nx + nw / 2, ny + nh / 2,
+                    ))
+                except Exception:
+                    pass
+                _set_text_colors(new_key)
+                return
+
+            o = tab_btns[old_key]
+            ox = o["x"] + o["w"] // 2
+            oy = o["y"] + o["h"] // 2
+            ow = o["w"]
+            oh = o["h"]
+
+            # Đổi màu text cũ ngay, text mới sau khi anim xong
+            try:
+                tab_bar.itemconfigure(o["text_id"], fill=self.CHU_MO)
+            except Exception:
+                pass
+
+            total = 16
+            def _step(i):
+                if i > total:
+                    _ind_anim["job"] = None
+                    # Đảm bảo vị trí cuối chính xác
+                    try:
+                        tab_bar.coords(indicator_id, *_rr_coords(
+                            nx - nw / 2, ny - nh / 2,
+                            nx + nw / 2, ny + nh / 2,
+                        ))
+                    except Exception:
+                        pass
+                    _set_text_colors(new_key)
+                    return
+                t = i / total
+                # Ease-out cubic cho mượt
+                k = 1 - (1 - t) ** 3
+                cx = ox + (nx - ox) * k
+                cy = oy + (ny - oy) * k
+                cw = ow + (nw - ow) * k
+                ch = oh + (nh - oh) * k
+                try:
+                    tab_bar.coords(indicator_id, *_rr_coords(
+                        cx - cw / 2, cy - ch / 2,
+                        cx + cw / 2, cy + ch / 2,
+                    ))
+                except Exception:
+                    return
+                _ind_anim["job"] = self.root.after(16,
+                                                    lambda: _step(i + 1))
+
+            _step(0)
 
         def switch_tab(key):
-            self._settings_tab.set(key)
-            for k, b in tab_btns.items():
-                if k == key:
-                    b.config(bg=self.NEN3, fg=self.XANH_DUONG)
-                else:
-                    b.config(bg=self.NEN2, fg=self.CHU_MO)
-            # Show/hide frames
+            old_key = current_tab["key"]
+            if old_key == key:
+                return
+            current_tab["key"] = key
+
+            # Di chuyển indicator
+            _move_indicator(old_key, key)
+
+            # Hiện frame tương ứng
             for k, f in tab_frames.items():
                 if k == key:
-                    f.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+                    f.pack(fill="both", expand=True,
+                            padx=16, pady=(10, 0))
                 else:
                     f.pack_forget()
 
-        for key, label in tab_defs:
-            b = tk.Button(tab_bar, text=label,
-                          bg=self.NEN2, fg=self.CHU_MO,
-                          activebackground=self.NEN3,
-                          activeforeground=self.XANH_DUONG,
-                          relief="flat", cursor="hand2",
-                          font=("Segoe UI", 9, "bold"),
-                          padx=14, pady=6, bd=0,
-                          command=lambda k=key: switch_tab(k))
-            b.pack(side="left", padx=(6, 0), pady=4)
-            tab_btns[key] = b
+        # Click vào canvas → xác định tab
+        def _on_tab_click(e):
+            for key, info in tab_btns.items():
+                if (info["x"] <= e.x <= info["x"] + info["w"]
+                        and info["y"] <= e.y <= info["y"] + info["h"]):
+                    switch_tab(key)
+                    return
 
-        # ── Container cho các tab ──
-        container = tk.Frame(win, bg=self.NEN)
+        tab_bar.bind("<Button-1>", _on_tab_click)
+
+        # ═══ Container ═══
+        container = tk.Frame(card, bg=self.NEN)
         container.pack(fill="both", expand=True)
-
-        tab_frames = {}
 
         # ═══════════════════════════════════════════════════════
         # TAB 1 — HIỆU ỨNG
@@ -1179,14 +1557,13 @@ class UngDungQuanLy:
         def make_toggle(parent, icon_label, desc, key, color_on):
             row = tk.Frame(parent, bg=self.NEN2, padx=14, pady=12)
             row.pack(fill="x", pady=4)
-
             info = tk.Frame(row, bg=self.NEN2)
             info.pack(side="left", fill="x", expand=True)
             tk.Label(info, text=icon_label, bg=self.NEN2, fg=self.CHU,
                      font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x")
             tk.Label(info, text=desc, bg=self.NEN2, fg=self.CHU_MO,
                      font=("Segoe UI", 8, "italic"), anchor="w",
-                     wraplength=340, justify="left").pack(fill="x", pady=(2, 0))
+                     wraplength=380, justify="left").pack(fill="x", pady=(2, 0))
 
             btn = tk.Button(row, bg=self.NEN3, fg=self.CHU,
                             relief="flat", cursor="hand2",
@@ -1212,7 +1589,6 @@ class UngDungQuanLy:
             btn.config(command=toggle)
             btn.pack(side="right", padx=(10, 0))
             refresh()
-            return row
 
         make_toggle(f_effects, "🎬  Animation",
                     "Bật/tắt toàn bộ hiệu ứng chuyển động "
@@ -1235,7 +1611,6 @@ class UngDungQuanLy:
         f_config = tk.Frame(container, bg=self.NEN)
         tab_frames["config"] = f_config
 
-        # Canvas + Scrollbar cho scrollable frame
         canvas_cfg = tk.Canvas(f_config, bg=self.NEN,
                                 highlightthickness=0, bd=0)
         sb_cfg = ttk.Scrollbar(f_config, orient="vertical",
@@ -1252,51 +1627,35 @@ class UngDungQuanLy:
         canvas_cfg.bind("<Configure>",
                         lambda e: canvas_cfg.itemconfig(win_cfg, width=e.width))
 
-        # Mouse wheel — chỉ khi chuột trong vùng này
         def _cfg_wheel(e):
             canvas_cfg.yview_scroll(int(-1 * (e.delta / 120)), "units")
         def _cfg_lin(e):
             canvas_cfg.yview_scroll(int(-1 if e.num == 4 else 1), "units")
-        def _cfg_enter(e):
-            canvas_cfg.bind_all("<MouseWheel>", _cfg_wheel)
-            canvas_cfg.bind_all("<Button-4>",   _cfg_lin)
-            canvas_cfg.bind_all("<Button-5>",   _cfg_lin)
-        def _cfg_leave(e):
-            canvas_cfg.unbind_all("<MouseWheel>")
-            canvas_cfg.unbind_all("<Button-4>")
-            canvas_cfg.unbind_all("<Button-5>")
-        canvas_cfg.bind("<Enter>", _cfg_enter)
-        canvas_cfg.bind("<Leave>", _cfg_leave)
+        canvas_cfg.bind("<MouseWheel>", _cfg_wheel)
+        canvas_cfg.bind("<Button-4>",   _cfg_lin)
+        canvas_cfg.bind("<Button-5>",   _cfg_lin)
 
         tk.Label(inner_cfg, text="✏️  Sửa trực tiếp trong settings.json",
                  bg=self.NEN, fg=self.XANH_DUONG,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(0, 8))
-
-        tk.Label(inner_cfg,
-                 text=f"File: {SETTINGS_FILE}",
+        tk.Label(inner_cfg, text=f"File: {SETTINGS_FILE}",
                  bg=self.NEN, fg=self.CHU_MO,
                  font=("Consolas", 8), anchor="w"
                  ).pack(fill="x", pady=(0, 12))
 
-        # ── Nhóm cấu hình ──
         def make_cfg_group(parent, title, icon, items):
-            """items = list (key, label, value, desc)."""
             tk.Label(parent, text=f"{icon}  {title}",
                      bg=self.NEN, fg=self.TIM,
                      font=("Segoe UI", 10, "bold"), anchor="w"
                      ).pack(fill="x", pady=(8, 4))
-
             box = tk.Frame(parent, bg=self.NEN2)
             box.pack(fill="x", pady=(0, 6))
-
             for key, label, value, desc in items:
                 row = tk.Frame(box, bg=self.NEN2, padx=12, pady=8)
                 row.pack(fill="x")
-
                 left = tk.Frame(row, bg=self.NEN2)
                 left.pack(side="left", fill="x", expand=True)
-
                 tk.Label(left, text=label, bg=self.NEN2, fg=self.CHU,
                          font=("Segoe UI", 10, "bold"), anchor="w"
                          ).pack(fill="x")
@@ -1306,17 +1665,13 @@ class UngDungQuanLy:
                 if desc:
                     tk.Label(left, text=desc, bg=self.NEN2, fg=self.CHU_MO,
                              font=("Segoe UI", 8, "italic"),
-                             anchor="w", wraplength=340, justify="left"
+                             anchor="w", wraplength=380, justify="left"
                              ).pack(fill="x", pady=(1, 0))
-
                 tk.Label(row, text=str(value), bg=self.NEN3, fg=self.XANH_LA,
                          font=("Consolas", 10, "bold"),
                          padx=10, pady=4
                          ).pack(side="right", padx=(10, 0))
 
-            return box
-
-        # Nhóm 1: Điểm danh
         make_cfg_group(inner_cfg, "Điểm danh", "📋", [
             ("ly_do_mac_dinh",  "Lý do mặc định",
              self.settings.get("ly_do_mac_dinh", "?"),
@@ -1325,48 +1680,40 @@ class UngDungQuanLy:
              self.settings.get("max_editable_week", "?"),
              "Không cho sửa tuần vượt quá giá trị này"),
         ])
-
-        # Nhóm 2: UI / hiệu năng
         make_cfg_group(inner_cfg, "UI / Hiệu năng", "⚡", [
             ("click_delay_ms", "Click delay",
              f"{self.settings.get('click_delay_ms', '?')} ms",
-             "Đợi phân biệt single/double click (180ms ~ mặc định Windows)"),
+             "Đợi phân biệt single/double click"),
             ("filter_debounce_ms", "Filter debounce",
              f"{self.settings.get('filter_debounce_ms', '?')} ms",
-             "Đợi sau khi gõ xong mới lọc (giảm lag khi gõ nhanh)"),
+             "Đợi sau khi gõ xong mới lọc"),
             ("auto_save_interval_s", "Auto-save",
              f"{self.settings.get('auto_save_interval_s', '?')} s",
              "Tự động lưu sau mỗi N giây nếu có thay đổi"),
         ])
-
-        # Nhóm 3: Dữ liệu / backup
         make_cfg_group(inner_cfg, "Dữ liệu / Backup", "💾", [
             ("backup_count", "Backup giữ lại",
              f"{self.settings.get('backup_count', '?')} bản",
-             "Số file output.txt.bak.<timestamp> giữ lại gần nhất"),
+             "Số file output.txt.bak.<timestamp> giữ lại"),
             ("undo_stack_size", "Undo stack",
              f"{self.settings.get('undo_stack_size', '?')} bước",
              "Số lần Ctrl+Z có thể hoàn tác"),
         ])
-
-        # Nhóm 4: Sắp xếp
         sort_key = self.settings.get("sort_key", "ma")
         sort_dir = "Giảm dần" if self.settings.get("sort_desc", False) else "Tăng dần"
         make_cfg_group(inner_cfg, "Sắp xếp", "🔤", [
             ("sort_key",  "Cột sắp xếp mặc định",
-             {"ma": "Mã HS", "ten": "Họ tên", "lop": "Lớp"}.get(sort_key, sort_key),
-             "Bấm tiêu đề cột để đổi; giá trị này lưu lại cho lần sau"),
+             {"ma": "Mã HS", "ten": "Họ tên", "lop": "Lớp", "to": "Tổ"}.get(sort_key, sort_key),
+             "Bấm tiêu đề cột để đổi"),
             ("sort_desc", "Hướng sắp xếp", sort_dir, ""),
         ])
 
-        # Nhóm 5: Đường dẫn file
+        # Đường dẫn file
         tk.Label(inner_cfg, text="📁  Đường dẫn file", bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(12, 4))
-
         path_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=10)
         path_box.pack(fill="x", pady=(0, 6))
-
         for label, path in [
             ("Data",          DATA_FILE),
             ("Backup",        os.path.basename(DATA_FILE) + ".bak.*"),
@@ -1381,9 +1728,8 @@ class UngDungQuanLy:
                      ).pack(side="left")
             tk.Label(row, text=path, bg=self.NEN2, fg=self.CHU,
                      font=("Consolas", 8), anchor="w", justify="left",
-                     wraplength=360).pack(side="left", fill="x", expand=True)
+                     wraplength=400).pack(side="left", fill="x", expand=True)
 
-        # Nút mở thư mục (chỉ Windows)
         def open_folder():
             try:
                 folder = SCRIPT_DIR
@@ -1412,10 +1758,8 @@ class UngDungQuanLy:
         f_changelog = tk.Frame(container, bg=self.NEN)
         tab_frames["changelog"] = f_changelog
 
-        # Scrollable text
         log_frame = tk.Frame(f_changelog, bg=self.NEN)
         log_frame.pack(fill="both", expand=True)
-
         txt = tk.Text(log_frame, bg=self.NEN2, fg=self.CHU,
                        insertbackground=self.CHU, relief="flat",
                        font=("Consolas", 9), wrap="word",
@@ -1426,7 +1770,6 @@ class UngDungQuanLy:
         txt.pack(side="left", fill="both", expand=True)
         sb_log.pack(side="right", fill="y")
 
-        # Tag màu
         txt.tag_configure("version", foreground=self.XANH_LA,
                           font=("Segoe UI", 12, "bold"))
         txt.tag_configure("date",    foreground=self.CHU_MO,
@@ -1435,60 +1778,43 @@ class UngDungQuanLy:
                           font=("Segoe UI", 10, "bold"))
         txt.tag_configure("item",    foreground=self.CHU,
                           font=("Consolas", 9))
-        txt.tag_configure("highlight", foreground=self.CAM,
-                          font=("Consolas", 9, "bold"))
         txt.tag_configure("sep",     foreground=self.NEN3)
 
-        # Nội dung update log
         CHANGELOG = [
-            ("v2.1", "2026-10-12", [
+            ("v2.1", "2026-10-13", [
                 ("section", "🆕 Tính năng mới"),
                 ("item", "  • Thêm trường Tổ (1-4) cho HS"),
                 ("item", "  • Cột Tổ trong bảng danh sách"),
                 ("item", "  • Filter theo Tổ"),
                 ("item", "  • Hiển thị Tổ trong bảng điểm danh (T1 · Tên)"),
                 ("item", "  • Xuất CSV có cột Tổ"),
-                ("item", "  • Thống kê có cột Tổ"),
+                ("item", "  • Nút Thêm/Sửa HS gộp chung"),
+                ("item", "  • Settings hiển thị inline (không cửa sổ rời)"),
             ]),
             ("v2.0", "2026-10-12", [
-                ("section", "✨ Animation mới"),
-                ("item", "  • Window fade-in khi mở app"),
-                ("item", "  • Slide-up panel chi tiết khi click ô"),
-                ("item", "  • Progress bar khi push GitHub"),
-                ("item", "  • Typewriter cho status bar"),
-                ("item", "  • Row flash khi đổi trạng thái"),
-                ("item", "  • Pulse viền đỏ khi tuần bị khóa"),
-                ("item", "  • Confetti khi lưu thành công"),
-                ("item", "  • Popup fade cho Thống kê / Lịch sử"),
+                ("section", "✨ Animation"),
+                ("item", "  • Window fade-in, slide panel, typewriter"),
+                ("item", "  • Progress bar, row flash, confetti"),
                 ("sep",  ""),
                 ("section", "🐛 Fix bug"),
-                ("item", "  • Fix crash key int/string trong weeks"),
+                ("item", "  • Fix key int/string trong weeks"),
                 ("item", "  • Fix merge data không mất dữ liệu"),
-                ("item", "  • Fix race condition khi push GitHub"),
                 ("item", "  • Fix UI đơ bằng threading"),
-                ("item", "  • Fix lỗi khi chưa chọn ô mà bấm lưu"),
                 ("sep",  ""),
                 ("section", "🚀 Tính năng"),
-                ("item", "  • Pull → Merge → Push tự động (union merge)"),
-                ("item", "  • Backup tự động trước mỗi lần ghi"),
-                ("item", "  • Lịch sử thay đổi GitHub (commits + diff)"),
-                ("item", "  • Undo/Redo stack (Ctrl+Z / Ctrl+Y)"),
-                ("item", "  • Báo cáo thống kê chuyên cần"),
-                ("item", "  • Export CSV"),
-                ("item", "  • Tìm kiếm theo Mã / Tên / Lớp"),
-                ("item", "  • Auto-save định kỳ"),
-                ("item", "  • Settings popup với toggle animation"),
-                ("item", "  • Log file app.log"),
+                ("item", "  • Pull → Merge → Push tự động"),
+                ("item", "  • Backup tự động"),
+                ("item", "  • Lịch sử thay đổi GitHub"),
+                ("item", "  • Undo/Redo (Ctrl+Z / Ctrl+Y)"),
+                ("item", "  • Thống kê, Export CSV"),
             ]),
             ("v1.0", "2026-10-01", [
                 ("section", "📦 Bản đầu tiên"),
-                ("item", "  • Quản lý HS theo tuần (35 tuần, 2 học kỳ)"),
-                ("item", "  • Điểm danh / Lý do nghỉ / Lỗi vi phạm"),
-                ("item", "  • Sync GitHub (fetch + push)"),
-                ("item", "  • UI Catppuccin Mocha"),
+                ("item", "  • Quản lý HS 35 tuần, 2 học kỳ"),
+                ("item", "  • Điểm danh / Lý do / Lỗi vi phạm"),
+                ("item", "  • Sync GitHub, UI Catppuccin"),
             ]),
         ]
-
         for i, (ver, date, items) in enumerate(CHANGELOG):
             if i > 0:
                 txt.insert("end", "\n" + "─" * 55 + "\n\n", "sep")
@@ -1496,19 +1822,18 @@ class UngDungQuanLy:
             txt.insert("end", f"  {date}\n\n", "date")
             for tag, line in items:
                 txt.insert("end", line + "\n", tag)
-
         txt.config(state="disabled")
 
-        # ── Footer ──
-        footer = tk.Frame(win, bg=self.NEN2, height=52)
+        # ═══════════════════════════════════════════════════════
+        # Footer
+        # ═══════════════════════════════════════════════════════
+        footer = tk.Frame(card, bg=self.NEN2, height=52)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
-
-        tk.Label(footer, text="ManagementSystem v2.0 — Py 3.12+ / Tkinter",
+        tk.Label(footer, text="ManagementSystem v2.1 — Py 3.12+ / Tkinter",
                  bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 8, "italic")).pack(side="left", padx=15)
-
-        tk.Button(footer, text="Đóng", command=win.destroy,
+        tk.Button(footer, text="Đóng", command=lambda: close_settings(),
                   bg=self.XANH_DUONG, fg="#1e1e2e",
                   activebackground=self.XANH_DUONG_H,
                   relief="flat", cursor="hand2",
@@ -1516,8 +1841,63 @@ class UngDungQuanLy:
                   padx=20, pady=5, bd=0
                   ).pack(side="right", padx=15, pady=10)
 
-        # ── Mở tab mặc định ──
+        close_btn.config(command=close_settings)
+
+        # Mở tab mặc định
         switch_tab("effects")
+
+        # ═══ FADE IN — chụp card SAU KHI UI đã vẽ đầy đủ ═══
+        if self.settings.get("enable_animation", True) and PIL_OK:
+            # Đưa card + shadow vào giữa CHỈ ĐỂ GRAB (chỉ vài ms)
+            card.place_configure(rely=0.5)
+            shadow.place_configure(rely=0.5)
+            card.update_idletasks()
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
+
+            img_card = _grab_widget_image(card, card_w, card_h)
+
+            if img_card is not None:
+                # Ẩn CARD thật — shadow vẫn giữ làm viền
+                card.place_forget()
+
+                cover = tk.Label(self.root, borderwidth=0, bg=self.NEN)
+                cover.place(relx=0.5, rely=0.5, anchor="center",
+                            width=card_w, height=card_h)
+                cover.lift()
+                self._settings_cover = cover
+
+                total_fi = 15
+                def _fade_in_step(i):
+                    if i > total_fi:
+                        try: cover.destroy()
+                        except Exception: pass
+                        self._settings_cover = None
+                        # Hiện lại card thật Ở GIỮA, trên shadow
+                        card.place(relx=0.5, rely=0.5, anchor="center",
+                                   width=card_w, height=card_h)
+                        card.lift()
+                        return
+                    t = i / total_fi
+                    k = 1 - (1 - t) ** 3
+                    photo = _blend_card_with_bg(
+                        img_card, card_w, card_h, k, self.NEN)
+                    if photo:
+                        cover.configure(image=photo)
+                        cover.image = photo
+                    self.root.after(16, lambda: _fade_in_step(i + 1))
+
+                self.root.after(20, lambda: _fade_in_step(0))
+            # else: grab fail → card + shadow đã ở 0.5 rồi, hiện luôn
+        else:
+            # Không Pillow / tắt anim → hiện ngay
+            card.place_configure(rely=0.5)
+            shadow.place_configure(rely=0.5)
+
+        # Lưu hàm đóng để Esc gọi
+        self._close_settings_fn = close_settings
 
     # ═══ Style ═══
     def _cai_dat_style(self):
@@ -1562,7 +1942,7 @@ class UngDungQuanLy:
             relief="flat", cursor="hand2",
             font=("Segoe UI", 14), bd=0,
             padx=12, pady=2,
-            command=self.mo_settings)
+            command=self.mo_settings_inline)
         self.settings_btn.pack(side="left", padx=(15, 0), pady=15)
 
         # Hover mượt cho nút settings
@@ -2964,81 +3344,213 @@ class UngDungQuanLy:
         self.thong_bao(f"⊘ Đã đánh dấu vắng tuần {self.tuan_hien_tai} "
                         f"cho {len(ds_ma)} HS", self.DO)
 
-    # ═══ Stats ═══
-    def mo_thong_ke(self):
-        win = tk.Toplevel(self.root)
-        win.title("Báo cáo thống kê")
-        win.configure(bg=self.NEN)
-        win.geometry("800x600")
-        if self.settings.get("enable_animation", True):
-            fade_in_window(win, duration=200, steps=10)
+    # ═══ Vẽ biểu đồ thống kê ═══
+    def _ve_bieu_do_thong_ke(self, canvas, rows, by_class,
+                              tot_p, tot_e, tot_a):
+        """Vẽ donut + bar charts lên Canvas."""
+        try:
+            canvas.delete("all")
+            canvas.update_idletasks()
+            W = max(940, canvas.winfo_width() - 4)
+        except Exception:
+            return
 
-        tk.Label(win, text="📊  THỐNG KÊ CHUYÊN CẦN",
-                 bg=self.NEN, fg=self.XANH_DUONG,
-                 font=("Segoe UI", 14, "bold")).pack(pady=10)
+        PAD = 30
+        content_w = W - 2 * PAD
 
-        frame = tk.Frame(win, bg=self.NEN)
-        frame.pack(fill="both", expand=True, padx=15, pady=10)
+        # ═══════════════════════════════════════════════
+        # SECTION 1 — DONUT TỔNG QUAN + LEGEND
+        # ═══════════════════════════════════════════════
+        y = 20
+        canvas.create_text(PAD, y,
+                           text="TỔNG QUAN CHUYÊN CẦN",
+                           anchor="w", fill=self.XANH_DUONG,
+                           font=("Segoe UI", 13, "bold"))
+        canvas.create_text(PAD, y + 20,
+                           text=f"{len(rows)} học sinh · {TONG_TUAN} tuần học",
+                           anchor="w", fill=self.CHU_MO,
+                           font=("Segoe UI", 9, "italic"))
 
-        cols = ("name", "class", "to", "present", "excused",
-                "absent", "rate", "errors")
-        tv = ttk.Treeview(frame, columns=cols, show="headings")
-        headers = [
-            ("name",    "Học sinh",   180),
-            ("class",   "Lớp",         70),
-            ("to",      "Tổ",          45),
-            ("present", "Có mặt",      75),
-            ("excused", "Có phép",     75),
-            ("absent",  "Không phép",  85),
-            ("rate",    "Tỉ lệ",        75),
-            ("errors",  "Lỗi",          55),
+        total = tot_p + tot_e + tot_a
+        cx = PAD + 130
+        cy = y + 180
+        r  = 115
+
+        # Donut
+        if total > 0:
+            arcs = [
+                (tot_p, self.XANH_LA),
+                (tot_e, self.VANG),
+                (tot_a, self.DO),
+            ]
+            start = 90
+            for value, color in arcs:
+                if value <= 0: continue
+                extent = -value / total * 360
+                canvas.create_arc(cx - r, cy - r, cx + r, cy + r,
+                                  start=start, extent=extent,
+                                  fill=color, outline=self.NEN, width=3)
+                start += extent
+
+        # Lỗ donut
+        inner = r * 0.58
+        canvas.create_oval(cx - inner, cy - inner,
+                           cx + inner, cy + inner,
+                           fill=self.NEN, outline="")
+        canvas.create_text(cx, cy - 12,
+                           text=f"{total:,}".replace(",", "."),
+                           fill=self.CHU,
+                           font=("Segoe UI", 22, "bold"))
+        canvas.create_text(cx, cy + 16, text="tổng buổi",
+                           fill=self.CHU_MO,
+                           font=("Segoe UI", 9))
+
+        # Legend bên phải
+        lx = PAD + 320
+        ly = cy - 90
+        legend_items = [
+            ("Có mặt",      tot_p, self.XANH_LA),
+            ("Có phép",     tot_e, self.VANG),
+            ("Không phép",  tot_a, self.DO),
         ]
-        for k, txt, w in headers:
-            tv.heading(k, text=txt)
-            tv.column(k, width=w, anchor="center" if k != "name" else "w")
+        for label, value, color in legend_items:
+            pct = (value / total * 100) if total else 0
+            canvas.create_rectangle(lx, ly - 10, lx + 18, ly + 10,
+                                    fill=color, outline="")
+            canvas.create_text(lx + 30, ly, text=label,
+                               anchor="w", fill=self.CHU,
+                               font=("Segoe UI", 11, "bold"))
+            canvas.create_text(lx + 160, ly,
+                               text=f"{value:,} buổi".replace(",", "."),
+                               anchor="w", fill=self.CHU_MO,
+                               font=("Consolas", 10))
+            canvas.create_text(lx + 300, ly,
+                               text=f"{pct:.1f}%",
+                               anchor="w", fill=color,
+                               font=("Segoe UI", 12, "bold"))
+            ly += 40
 
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=tv.yview)
-        tv.configure(yscrollcommand=scroll.set)
-        tv.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        # Tỉ lệ chuyên cần chung
+        rate_all = (tot_p / total * 100) if total else 0
+        if rate_all >= 90:   c_all = self.XANH_LA
+        elif rate_all >= 75: c_all = self.VANG
+        else:                c_all = self.DO
 
-        ly_do_md = self.settings["ly_do_mac_dinh"]
-        rows = []
-        for ma, d in self.HocSinh.items():
-            n_present = n_excused = n_absent = n_err = 0
-            for t, w in d.get("weeks", {}).items():
-                att = w.get("attendance", {})
-                rea = w.get("reasons",    {})
-                err = w.get("errors",     {})
-                for day in THU:
-                    if att.get(day, False):
-                        n_present += 1
-                    else:
-                        r = rea.get(day, "").strip()
-                        if r and r != ly_do_md:
-                            n_excused += 1
-                        else:
-                            n_absent += 1
-                    if err.get(day, "").strip():
-                        n_err += 1
-            total = n_present + n_excused + n_absent
-            rate = (n_present / total * 100) if total else 0
-            rows.append((d["name"], d["class"], d.get("to", "") or "—",
-                          n_present, n_excused,
-                          n_absent, f"{rate:.1f}%", n_err))
+        canvas.create_text(lx, ly + 20,
+                           text="Tỉ lệ chuyên cần chung",
+                           anchor="w", fill=self.CHU_MO,
+                           font=("Segoe UI", 10))
+        canvas.create_text(lx, ly + 48,
+                           text=f"{rate_all:.1f}%",
+                           anchor="w", fill=c_all,
+                           font=("Segoe UI", 22, "bold"))
 
-        rows.sort(key=lambda r: float(r[6].rstrip("%")))
-        rows.reverse()
+        # ═══════════════════════════════════════════════
+        # SECTION 2 — BAR CHART THEO LỚP
+        # ═══════════════════════════════════════════════
+        y2 = cy + r + 50
+        canvas.create_text(PAD, y2,
+                           text="CHUYÊN CẦN THEO LỚP",
+                           anchor="w", fill=self.XANH_DUONG,
+                           font=("Segoe UI", 13, "bold"))
 
-        for i, r in enumerate(rows):
-            tag = "le" if i % 2 else "chan"
-            tv.tag_configure(tag, background=self.NEN2 if i % 2 else self.NEN)
-            tv.insert("", "end", values=r, tags=(tag,))
+        class_items = []
+        for cls, (p, e, a, cnt) in by_class.items():
+            tt = p + e + a
+            rate = (p / tt * 100) if tt else 0
+            class_items.append((cls, rate, p, tt, cnt))
+        class_items.sort(key=lambda x: -x[1])
 
-        tk.Button(win, text="Đóng", command=win.destroy,
-                  bg=self.NEN3, fg=self.CHU, relief="flat",
-                  font=("Segoe UI", 10, "bold"), padx=20, pady=6
-                  ).pack(pady=10)
+        label_w  = 150
+        value_w  = 180
+        bar_max_w = max(200, content_w - label_w - value_w)
+        row_h    = 36
+
+        yy = y2 + 36
+        for cls, rate, p, tt, cnt in class_items:
+            canvas.create_text(PAD, yy - 6, text=cls,
+                               anchor="w", fill=self.CHU,
+                               font=("Segoe UI", 10, "bold"))
+            canvas.create_text(PAD, yy + 10,
+                               text=f"{cnt} HS · {p}/{tt} buổi",
+                               anchor="w", fill=self.CHU_MO,
+                               font=("Segoe UI", 8))
+
+            bx = PAD + label_w
+            canvas.create_rectangle(bx, yy - 11,
+                                    bx + bar_max_w, yy + 11,
+                                    fill=self.NEN2, outline="")
+            bw = bar_max_w * (rate / 100)
+            if rate >= 90:   bc = self.XANH_LA
+            elif rate >= 75: bc = self.VANG
+            else:            bc = self.DO
+            if bw > 0:
+                canvas.create_rectangle(bx, yy - 11,
+                                        bx + bw, yy + 11,
+                                        fill=bc, outline="")
+            canvas.create_text(bx + bar_max_w + 12, yy,
+                               text=f"{rate:.1f}%",
+                               anchor="w", fill=bc,
+                               font=("Consolas", 11, "bold"))
+            yy += row_h
+
+        # ═══════════════════════════════════════════════
+        # SECTION 3 — TOP HS CHUYÊN CẦN THẤP NHẤT
+        # ═══════════════════════════════════════════════
+        y3 = yy + 30
+        canvas.create_text(PAD, y3,
+                           text="TOP 15 HỌC SINH CHUYÊN CẦN THẤP NHẤT",
+                           anchor="w", fill=self.XANH_DUONG,
+                           font=("Segoe UI", 13, "bold"))
+        canvas.create_text(PAD, y3 + 18,
+                           text="Sắp xếp theo tỉ lệ có mặt tăng dần",
+                           anchor="w", fill=self.CHU_MO,
+                           font=("Segoe UI", 9, "italic"))
+
+        top = sorted(rows, key=lambda r: r["rate"])[:15]
+        yy = y3 + 46
+        for r in top:
+            name_disp = r["name"]
+            if len(name_disp) > 22:
+                name_disp = name_disp[:20] + "…"
+            canvas.create_text(PAD, yy - 6, text=name_disp,
+                               anchor="w", fill=self.CHU,
+                               font=("Segoe UI", 10, "bold"))
+            canvas.create_text(PAD, yy + 10,
+                               text=f"Lớp {r['class']} · Tổ {r['to']} · Mã {r['ma']}",
+                               anchor="w", fill=self.CHU_MO,
+                               font=("Segoe UI", 8))
+
+            bx = PAD + label_w
+            canvas.create_rectangle(bx, yy - 11,
+                                    bx + bar_max_w, yy + 11,
+                                    fill=self.NEN2, outline="")
+            bw = bar_max_w * (r["rate"] / 100)
+            if r["rate"] >= 90:   bc = self.XANH_LA
+            elif r["rate"] >= 75: bc = self.VANG
+            else:                 bc = self.DO
+            if bw > 0:
+                canvas.create_rectangle(bx, yy - 11,
+                                        bx + bw, yy + 11,
+                                        fill=bc, outline="")
+            canvas.create_text(bx + bar_max_w + 12, yy,
+                               text=f"{r['rate']:.1f}%",
+                               anchor="w", fill=bc,
+                               font=("Consolas", 11, "bold"))
+            canvas.create_text(bx + bar_max_w + 90, yy,
+                               text=f"({r['present']}/{r['total']})",
+                               anchor="w", fill=self.CHU_MO,
+                               font=("Consolas", 9))
+            if r["errors"] > 0:
+                canvas.create_text(bx + bar_max_w + 170, yy,
+                                   text=f"⚠ {r['errors']} lỗi",
+                                   anchor="w", fill=self.CAM,
+                                   font=("Segoe UI", 9, "bold"))
+            yy += row_h
+
+        # Update scrollregion
+        H = yy + 40
+        canvas.configure(scrollregion=(0, 0, W, H))
 
     def xuat_csv(self):
         if not self.HocSinh:
@@ -3063,210 +3575,6 @@ class UngDungQuanLy:
             self.thong_bao(f"✓ Đã xuất CSV: {os.path.basename(path)}", self.XANH_LA)
         except Exception as e:
             self.thong_bao(f"✗ Lỗi xuất CSV: {e}", self.DO)
-
-        # ═══ Lịch sử thay đổi ═══
-    def mo_lich_su(self):
-        if not GH_CONFIG:
-            messagebox.showwarning("Không có GitHub",
-                                    "Cần github_config.json để xem lịch sử")
-            return
-
-        win = tk.Toplevel(self.root)
-        win.title("📜 Lịch sử thay đổi")
-        win.configure(bg=self.NEN)
-        win.geometry("1000x720")
-        win.minsize(820, 600)
-        if self.settings.get("enable_animation", True):
-            fade_in_window(win, duration=200, steps=10)
-
-        # ── Header ──
-        header = tk.Frame(win, bg=self.NEN2, height=44)
-        header.pack(fill="x"); header.pack_propagate(False)
-        tk.Label(header, text="📜  LỊCH SỬ THAY ĐỔI",
-                 bg=self.NEN2, fg=self.TIM,
-                 font=("Segoe UI", 13, "bold")).pack(side="left", padx=15, pady=8)
-        status = tk.Label(header, text="Đang tải...",
-                          bg=self.NEN2, fg=self.CHU_MO,
-                          font=("Segoe UI", 9, "italic"))
-        status.pack(side="right", padx=15)
-
-        # ── Controls ──
-        ctrl = tk.Frame(win, bg=self.NEN2)
-        ctrl.pack(fill="x", padx=10, pady=6)
-
-        tk.Label(ctrl, text="Số commit:", bg=self.NEN2, fg=self.CHU_MO,
-                 font=("Segoe UI", 9)).pack(side="left")
-        limit_var = tk.StringVar(value="30")
-        limit_cbb = ttk.Combobox(ctrl, textvariable=limit_var,
-                                  values=["10", "30", "50", "100"],
-                                  width=5, state="readonly")
-        limit_cbb.pack(side="left", padx=(4, 12))
-
-        tk.Label(ctrl, text="Tác giả:", bg=self.NEN2, fg=self.CHU_MO,
-                 font=("Segoe UI", 9)).pack(side="left")
-        author_var = tk.StringVar(value="Tất cả")
-        author_cbb = ttk.Combobox(ctrl, textvariable=author_var,
-                                   values=["Tất cả"], width=22, state="readonly")
-        author_cbb.pack(side="left", padx=(4, 12))
-
-        refresh_btn = tk.Button(ctrl, text="🔄 Tải lại",
-                                 bg=self.XANH_DUONG, fg="#1e1e2e",
-                                 relief="flat", font=("Segoe UI", 9, "bold"),
-                                 padx=12, pady=3, cursor="hand2")
-        refresh_btn.pack(side="left", padx=4)
-
-        # ── Treeview ──
-        tv_frame = tk.Frame(win, bg=self.NEN)
-        tv_frame.pack(fill="both", expand=False, padx=10, pady=(0, 6))
-
-        cols = ("time", "author", "msg", "sha")
-        tv = ttk.Treeview(tv_frame, columns=cols, show="headings", height=9)
-        tv.heading("time",   text="Thời gian")
-        tv.heading("author", text="Người sửa")
-        tv.heading("msg",    text="Ghi chú")
-        tv.heading("sha",    text="SHA")
-        tv.column("time",   width=160, anchor="w")
-        tv.column("author", width=160, anchor="w")
-        tv.column("msg",    width=460, anchor="w")
-        tv.column("sha",    width=80,  anchor="center")
-
-        sc = ttk.Scrollbar(tv_frame, orient="vertical", command=tv.yview)
-        tv.configure(yscrollcommand=sc.set)
-        tv.pack(side="left", fill="both", expand=True)
-        sc.pack(side="right", fill="y")
-
-        # ── Diff panel ──
-        tk.Label(win, text="Chi tiết thay đổi:",
-                 bg=self.NEN, fg=self.XANH_DUONG,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10)
-
-        diff_frame = tk.Frame(win, bg=self.NEN)
-        diff_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        diff_txt = tk.Text(diff_frame, bg=self.NEN2, fg=self.CHU,
-                           insertbackground=self.CHU, relief="flat",
-                           font=("Consolas", 9), wrap="word",
-                           padx=8, pady=6)
-        diff_sc = ttk.Scrollbar(diff_frame, orient="vertical",
-                                 command=diff_txt.yview)
-        diff_txt.configure(yscrollcommand=diff_sc.set)
-        diff_txt.pack(side="left", fill="both", expand=True)
-        diff_sc.pack(side="right", fill="y")
-
-        diff_txt.tag_configure("add",  foreground=self.XANH_LA)
-        diff_txt.tag_configure("del",  foreground=self.DO)
-        diff_txt.tag_configure("mod",  foreground=self.VANG)
-        diff_txt.tag_configure("info", foreground=self.CHU_MO)
-        diff_txt.config(state="disabled")
-
-        # ── State ──
-        state = {"commits": [], "loading": False}
-
-        def render_diff(lines):
-            diff_txt.config(state="normal")
-            diff_txt.delete("1.0", "end")
-            if not lines:
-                diff_txt.insert("end", "(Chưa chọn commit)\n", "info")
-            else:
-                for ln in lines:
-                    if ln.startswith("➕"):   tag = "add"
-                    elif ln.startswith("➖"): tag = "del"
-                    elif ln.startswith("✏️"):  tag = "mod"
-                    elif ln.startswith("  "):   tag = "mod"
-                    else:                       tag = "info"
-                    diff_txt.insert("end", ln + "\n", tag)
-            diff_txt.config(state="disabled")
-
-        def populate_tv():
-            for i in tv.get_children(): tv.delete(i)
-            a = author_var.get()
-            for i, c in enumerate(state["commits"]):
-                if a != "Tất cả" and c["author"] != a: continue
-                tv.insert("", "end", iid=str(i), values=(
-                    c["date"].replace("T", " ").replace("Z", "")[:19],
-                    c["author"],
-                    c["msg"].split("\n")[0],
-                    c["short"],
-                ))
-
-        def load_commits():
-            if state["loading"]: return
-            state["loading"] = True
-            status.config(text="Đang tải commits...", fg=self.XANH_DUONG)
-
-            def task():
-                return github_commits(GH_CONFIG, limit=int(limit_var.get()))
-
-            def done(commits):
-                state["commits"] = commits
-                authors = sorted({c["author"] for c in commits})
-                author_cbb["values"] = ["Tất cả"] + authors
-                if author_var.get() not in author_cbb["values"]:
-                    author_var.set("Tất cả")
-                populate_tv()
-                status.config(text=f"✓ {len(commits)} commit", fg=self.XANH_LA)
-                state["loading"] = False
-
-            def err(e):
-                status.config(text=f"✗ Lỗi: {e}", fg=self.DO)
-                state["loading"] = False
-
-            self._async(task, on_success=done, on_error=err)
-
-        def on_select(event):
-            sel = tv.selection()
-            if not sel: return
-            idx = int(sel[0])
-            if idx >= len(state["commits"]): return
-            commit = state["commits"][idx]
-            # Parent commit
-            parent = state["commits"][idx + 1] if idx + 1 < len(state["commits"]) else None
-
-            status.config(text=f"Đang tải diff {commit['short']}...",
-                          fg=self.XANH_DUONG)
-
-            def task():
-                new_c = github_content_at_sha(GH_CONFIG, commit["sha"])
-                old_c = github_content_at_sha(GH_CONFIG, parent["sha"]) \
-                        if parent else "{}"
-                return (new_c, old_c, commit, parent)
-
-            def done(res):
-                new_c, old_c, c, p = res
-                if not new_c:
-                    render_diff([f"⚠ Không tải được nội dung {c['short']}"])
-                    status.config(text="✗ Fetch fail", fg=self.DO)
-                    return
-                try:
-                    new_raw = json.loads(new_c) if new_c else {}
-                    old_raw = json.loads(old_c) if old_c else {}
-                except Exception as ex:
-                    render_diff([f"⚠ JSON lỗi: {ex}"])
-                    status.config(text="✗ Parse fail", fg=self.DO)
-                    return
-                new_d = _normalize_simple(new_raw)
-                old_d = _normalize_simple(old_raw) if old_raw else {}
-                diffs = diff_data(old_d, new_d)
-
-                head = f"Commit {c['short']} bởi {c['author']} · {c['date'][:19]}"
-                head += f"\nSo với {p['short']}" if p else "\n(commit đầu tiên)"
-                head += f"\n{'-'*60}"
-                render_diff([head] + diffs)
-                status.config(text=f"✓ {len(diffs)} thay đổi", fg=self.XANH_LA)
-
-            def err(e):
-                render_diff([f"⚠ Lỗi: {e}"])
-                status.config(text="✗ Lỗi", fg=self.DO)
-
-            self._async(task, on_success=done, on_error=err)
-
-        refresh_btn.config(command=load_commits)
-        limit_cbb.bind("<<ComboboxSelected>>", lambda e: load_commits())
-        author_cbb.bind("<<ComboboxSelected>>", lambda e: populate_tv())
-        tv.bind("<<TreeviewSelect>>", on_select)
-
-        render_diff([])
-        load_commits()
 
     # ═══ Auto-save ═══
     def _schedule_auto_save(self):
@@ -3355,8 +3663,535 @@ class UngDungQuanLy:
                 self.thanh_trang_thai.after(1, do_pulse)
             except Exception:
                 pass
+    
+    # ═══════════════════════════════════════════════════════════
+    # INLINE PANEL HELPER — dùng chung cho Settings / Thống kê / Lịch sử
+    # ═══════════════════════════════════════════════════════════
+    def _mo_panel_inline(self, card_w, card_h, accent, build_fn):
+        """
+        Mở panel nổi giữa cửa sổ: blur nền + shadow + card + glow-in.
+        build_fn(card, close_fn) — vẽ UI vào card.
+        """
+        # Đóng panel cũ
+        if self._settings_overlay is not None:
+            fn = getattr(self, "_close_settings_fn", None)
+            if fn:
+                try: fn()
+                except Exception: pass
+            try: self.root.update_idletasks()
+            except Exception: pass
 
+        # ── Blur overlay ──
+        self.root.update_idletasks()
+        blur_ok = False
+        if PIL_OK:
+            try:
+                rx = self.root.winfo_rootx()
+                ry = self.root.winfo_rooty()
+                rw = self.root.winfo_width()
+                rh = self.root.winfo_height()
+                img = ImageGrab.grab(bbox=(rx, ry, rx + rw, ry + rh))
+                img = img.filter(ImageFilter.GaussianBlur(radius=12))
+                img = img.convert("RGBA")
+                dark = Image.new("RGBA", img.size, (10, 10, 20, 90))
+                img = Image.alpha_composite(img, dark).convert("RGB")
+                photo = ImageTk.PhotoImage(img)
+                blur = tk.Label(self.root, image=photo,
+                                borderwidth=0, highlightthickness=0)
+                blur.image = photo
+                blur.place(x=0, y=0, relwidth=1, relheight=1)
+                blur.lift()
+                self._settings_blur = blur
+                blur_ok = True
+            except Exception as e:
+                log_warn(f"Blur panel fail: {e}")
+
+        if not blur_ok:
+            overlay = tk.Frame(self.root, bg="#1a1a26")
+            overlay.place(x=0, y=0, relwidth=1, relheight=1)
+            overlay.lift()
+            self._settings_blur = overlay
+
+        # ── Shadow ──
+        shadow = tk.Frame(self.root, bg="#0a0a14")
+        shadow.place(relx=0.5, rely=0.5, anchor="center",
+                     width=card_w + 8, height=card_h + 8)
+        shadow.lift()
+        self._settings_shadow = shadow
+
+        # ── Card ──
+        card = tk.Frame(self.root, bg=self.NEN,
+                        highlightthickness=2,
+                        highlightbackground=accent)
+        card.place(relx=0.5, rely=0.5, anchor="center",
+                   width=card_w, height=card_h)
+        card.pack_propagate(False)
+        card.lift()
+        self._settings_overlay = card
+        self._settings_card_w  = card_w
+        self._settings_card_h  = card_h
+
+        # ── Close ──
+        def close():
+            for attr in ("_settings_cover", "_settings_overlay",
+                         "_settings_shadow", "_settings_blur"):
+                w = getattr(self, attr, None)
+                if w is not None:
+                    try: w.destroy()
+                    except Exception: pass
+                    setattr(self, attr, None)
+            try: self.root.update_idletasks()
+            except Exception: pass
+        self._close_settings_fn = close
+
+        # Bind background click / wheel
+        self._settings_blur.bind("<Button-1>", lambda e: close())
+        self._settings_blur.bind("<MouseWheel>", lambda e: "break")
+        self._settings_blur.bind("<Button-4>",   lambda e: "break")
+        self._settings_blur.bind("<Button-5>",   lambda e: "break")
+
+        # ── Build nội dung ──
+        build_fn(card, close)
+
+        # ── Glow-in ──
+        if self.settings.get("enable_animation", True):
+            card.configure(highlightbackground=self.NEN)
+            from_rgb = _hex_to_rgb(self.NEN)
+            to_rgb   = _hex_to_rgb(accent)
+
+            def glow(i=0, total=14):
+                if i > total:
+                    try: card.configure(highlightbackground=accent)
+                    except Exception: pass
+                    return
+                k = i / total
+                k = 1 - (1 - k) ** 3
+                try:
+                    rgb = tuple(_lerp(from_rgb[j], to_rgb[j], k)
+                                for j in range(3))
+                    card.configure(highlightbackground=_rgb_to_hex(rgb))
+                except Exception:
+                    return
+                self.root.after(16, lambda: glow(i + 1, total))
+            self.root.after(30, lambda: glow(0))
+        else:
+            try: card.configure(highlightbackground=accent)
+            except Exception: pass
+
+    # ═══════════════════════════════════════════════════════════
+    # THỐNG KÊ — inline
+    # ═══════════════════════════════════════════════════════════
+    def mo_thong_ke(self):
+        try:
+            sw = self.root.winfo_width()
+            sh = self.root.winfo_height()
+            cw = min(1040, sw - 60)
+            ch = min(760,  sh - 80)
+        except Exception:
+            cw, ch = 1040, 760
+        self._mo_panel_inline(cw, ch, self.XANH_DUONG,
+                              self._build_thong_ke_content)
+
+    def _build_thong_ke_content(self, card, close_fn):
+        # ── Header ──
+        header = tk.Frame(card, bg=self.NEN2, height=52)
+        header.pack(fill="x"); header.pack_propagate(False)
+        tk.Label(header, text="📊  THỐNG KÊ CHUYÊN CẦN",
+                 bg=self.NEN2, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 14, "bold")).pack(side="left",
+                                                     padx=18, pady=12)
+        tk.Label(header, text=f"{len(self.HocSinh)} học sinh · {TONG_TUAN} tuần",
+                 bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 10)).pack(side="left", padx=(0, 10))
+        close_btn = tk.Button(header, text="✕",
+                              bg=self.NEN2, fg=self.CHU_MO,
+                              activebackground=self.DO,
+                              activeforeground="#1e1e2e",
+                              relief="flat", cursor="hand2",
+                              font=("Segoe UI", 11, "bold"), bd=0,
+                              padx=12, pady=0,
+                              command=close_fn)
+        close_btn.pack(side="right", padx=8, pady=8)
+
+        # ── Tính data ──
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+        rows = []
+        tot_p = tot_e = tot_a = 0
+        by_class = {}
+        for ma, d in self.HocSinh.items():
+            n_p = n_e = n_a = n_err = 0
+            for t, w in d.get("weeks", {}).items():
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                err = w.get("errors", {})
+                for day in THU:
+                    if att.get(day, False):
+                        n_p += 1
+                    else:
+                        r = rea.get(day, "").strip()
+                        if r and r != ly_do_md:
+                            n_e += 1
+                        else:
+                            n_a += 1
+                    if err.get(day, "").strip():
+                        n_err += 1
+            total = n_p + n_e + n_a
+            rate = (n_p / total * 100) if total else 0
+            rows.append({
+                "ma": ma, "name": d["name"], "class": d["class"],
+                "to": d.get("to", "") or "—",
+                "present": n_p, "excused": n_e, "absent": n_a,
+                "total": total, "rate": rate, "errors": n_err,
+            })
+            tot_p += n_p; tot_e += n_e; tot_a += n_a
+            cls = d["class"] or "(Không lớp)"
+            arr = by_class.setdefault(cls, [0, 0, 0, 0])
+            arr[0] += n_p; arr[1] += n_e; arr[2] += n_a; arr[3] += 1
+
+        # ── Notebook ──
+        st = ttk.Style()
+        st.configure("Stats.TNotebook", background=self.NEN, borderwidth=0)
+        st.configure("Stats.TNotebook.Tab",
+                     background=self.NEN2, foreground=self.CHU_MO,
+                     padding=[16, 8],
+                     font=("Segoe UI", 10, "bold"), borderwidth=0)
+        st.map("Stats.TNotebook.Tab",
+               background=[("selected", self.NEN3)],
+               foreground=[("selected", self.XANH_DUONG)])
+
+        nb = ttk.Notebook(card, style="Stats.TNotebook")
+        nb.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ── Tab 1: bảng ──
+        tab_table = tk.Frame(nb, bg=self.NEN)
+        nb.add(tab_table, text="  📋 Bảng số liệu  ")
+        tv_frame = tk.Frame(tab_table, bg=self.NEN)
+        tv_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        cols = ("name", "class", "to", "present", "excused",
+                "absent", "rate", "errors")
+        tv = ttk.Treeview(tv_frame, columns=cols, show="headings")
+        for k, txt, w in [
+            ("name",    "Học sinh",   220),
+            ("class",   "Lớp",         75),
+            ("to",      "Tổ",          50),
+            ("present", "Có mặt",      80),
+            ("excused", "Có phép",     80),
+            ("absent",  "Không phép",  90),
+            ("rate",    "Tỉ lệ",        90),
+            ("errors",  "Lỗi",          60),
+        ]:
+            tv.heading(k, text=txt)
+            tv.column(k, width=w, anchor="center" if k != "name" else "w")
+        sc = ttk.Scrollbar(tv_frame, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sc.set)
+        tv.pack(side="left", fill="both", expand=True)
+        sc.pack(side="right", fill="y")
+        for i, r in enumerate(sorted(rows, key=lambda x: x["rate"])):
+            tag = "le" if i % 2 else "chan"
+            tv.tag_configure(tag,
+                             background=self.NEN2 if i % 2 else self.NEN)
+            tv.insert("", "end", values=(
+                r["name"], r["class"], r["to"],
+                r["present"], r["excused"], r["absent"],
+                f"{r['rate']:.1f}%", r["errors"],
+            ), tags=(tag,))
+
+        # ── Tab 2: biểu đồ ──
+        tab_chart = tk.Frame(nb, bg=self.NEN)
+        nb.add(tab_chart, text="  📊 Biểu đồ  ")
+        cv_holder = tk.Frame(tab_chart, bg=self.NEN)
+        cv_holder.pack(fill="both", expand=True)
+        cv_scroll = ttk.Scrollbar(cv_holder, orient="vertical")
+        cv_scroll.pack(side="right", fill="y")
+        canvas = tk.Canvas(cv_holder, bg=self.NEN,
+                           highlightthickness=0, bd=0,
+                           yscrollcommand=cv_scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        cv_scroll.config(command=canvas.yview)
+
+        def draw_all():
+            try:
+                if not canvas.winfo_exists(): return
+            except Exception:
+                return
+            self._ve_bieu_do_thong_ke(
+                canvas, rows, by_class, tot_p, tot_e, tot_a)
+
+        _job = {"id": None}
+        _last_w = {"v": 0}
+        def schedule_draw(event=None):
+            try: w_now = canvas.winfo_width()
+            except Exception: return
+            if abs(w_now - _last_w["v"]) < 20: return
+            _last_w["v"] = w_now
+            if _job["id"]:
+                try: card.after_cancel(_job["id"])
+                except Exception: pass
+            _job["id"] = card.after(180, draw_all)
+        canvas.bind("<Configure>", schedule_draw)
+        card.after(80, draw_all)
+
+        def _wh(e): canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        def _lh(e): canvas.yview_scroll(int(-1 if e.num == 4 else 1), "units")
+        canvas.bind("<MouseWheel>", _wh)
+        canvas.bind("<Button-4>", _lh)
+        canvas.bind("<Button-5>", _lh)
+
+        # ── Footer ──
+        footer = tk.Frame(card, bg=self.NEN2, height=52)
+        footer.pack(fill="x", side="bottom"); footer.pack_propagate(False)
+        tk.Label(footer,
+                 text="💡 Màu: Xanh ≥90% · Vàng 75–90% · Đỏ <75%",
+                 bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9, "italic")).pack(side="left", padx=15)
+        tk.Button(footer, text="Đóng", command=close_fn,
+                  bg=self.XANH_DUONG, fg="#1e1e2e",
+                  activebackground=self.XANH_DUONG_H,
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=24, pady=6, bd=0
+                  ).pack(side="right", padx=15, pady=10)
+
+    # ═══════════════════════════════════════════════════════════
+    # LỊCH SỬ — inline
+    # ═══════════════════════════════════════════════════════════
+    def mo_lich_su(self):
+        if not GH_CONFIG:
+            messagebox.showwarning("Không có GitHub",
+                                    "Cần github_config.json để xem lịch sử")
+            return
+        try:
+            sw = self.root.winfo_width()
+            sh = self.root.winfo_height()
+            cw = min(1060, sw - 60)
+            ch = min(780,  sh - 80)
+        except Exception:
+            cw, ch = 1060, 780
+        self._mo_panel_inline(cw, ch, self.TIM,
+                              self._build_lich_su_content)
+
+    def _build_lich_su_content(self, card, close_fn):
+        # ── Header ──
+        header = tk.Frame(card, bg=self.NEN2, height=52)
+        header.pack(fill="x"); header.pack_propagate(False)
+        tk.Label(header, text="📜  LỊCH SỬ THAY ĐỔI",
+                 bg=self.NEN2, fg=self.TIM,
+                 font=("Segoe UI", 14, "bold")).pack(side="left",
+                                                     padx=18, pady=12)
+        status = tk.Label(header, text="Đang tải...",
+                          bg=self.NEN2, fg=self.CHU_MO,
+                          font=("Segoe UI", 9, "italic"))
+        status.pack(side="right", padx=8)
+        tk.Button(header, text="✕",
+                  bg=self.NEN2, fg=self.CHU_MO,
+                  activebackground=self.DO, activeforeground="#1e1e2e",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 11, "bold"), bd=0,
+                  padx=12, pady=0, command=close_fn
+                  ).pack(side="right", padx=4, pady=8)
+
+        # ── Controls ──
+        ctrl = tk.Frame(card, bg=self.NEN2)
+        ctrl.pack(fill="x", padx=10, pady=6)
+        tk.Label(ctrl, text="Số commit:", bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9)).pack(side="left")
+        limit_var = tk.StringVar(value="30")
+        limit_cbb = ttk.Combobox(ctrl, textvariable=limit_var,
+                                  values=["10", "30", "50", "100"],
+                                  width=5, state="readonly")
+        limit_cbb.pack(side="left", padx=(4, 12))
+        tk.Label(ctrl, text="Tác giả:", bg=self.NEN2, fg=self.CHU_MO,
+                 font=("Segoe UI", 9)).pack(side="left")
+        author_var = tk.StringVar(value="Tất cả")
+        author_cbb = ttk.Combobox(ctrl, textvariable=author_var,
+                                   values=["Tất cả"],
+                                   width=22, state="readonly")
+        author_cbb.pack(side="left", padx=(4, 12))
+        refresh_btn = tk.Button(ctrl, text="🔄 Tải lại",
+                                 bg=self.XANH_DUONG, fg="#1e1e2e",
+                                 relief="flat",
+                                 font=("Segoe UI", 9, "bold"),
+                                 padx=12, pady=3, cursor="hand2")
+        refresh_btn.pack(side="left", padx=4)
+
+        # ── Treeview ──
+        tv_frame = tk.Frame(card, bg=self.NEN)
+        tv_frame.pack(fill="x", expand=False, padx=10, pady=(0, 6))
+        cols = ("time", "author", "msg", "sha")
+        tv = ttk.Treeview(tv_frame, columns=cols,
+                          show="headings", height=9)
+        tv.heading("time",   text="Thời gian")
+        tv.heading("author", text="Người sửa")
+        tv.heading("msg",    text="Ghi chú")
+        tv.heading("sha",    text="SHA")
+        tv.column("time",   width=160, anchor="w")
+        tv.column("author", width=160, anchor="w")
+        tv.column("msg",    width=460, anchor="w")
+        tv.column("sha",    width=80,  anchor="center")
+        sc = ttk.Scrollbar(tv_frame, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=sc.set)
+        tv.pack(side="left", fill="both", expand=True)
+        sc.pack(side="right", fill="y")
+
+        # ── Diff panel ──
+        tk.Label(card, text="Chi tiết thay đổi:",
+                 bg=self.NEN, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10)
+        diff_frame = tk.Frame(card, bg=self.NEN)
+        diff_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        diff_txt = tk.Text(diff_frame, bg=self.NEN2, fg=self.CHU,
+                           insertbackground=self.CHU, relief="flat",
+                           font=("Consolas", 9), wrap="word",
+                           padx=8, pady=6)
+        diff_sc = ttk.Scrollbar(diff_frame, orient="vertical",
+                                 command=diff_txt.yview)
+        diff_txt.configure(yscrollcommand=diff_sc.set)
+        diff_txt.pack(side="left", fill="both", expand=True)
+        diff_sc.pack(side="right", fill="y")
+        diff_txt.tag_configure("add",  foreground=self.XANH_LA)
+        diff_txt.tag_configure("del",  foreground=self.DO)
+        diff_txt.tag_configure("mod",  foreground=self.VANG)
+        diff_txt.tag_configure("info", foreground=self.CHU_MO)
+        diff_txt.config(state="disabled")
+
+        # ── Safe wrapper: callback async check panel còn sống ──
+        def safe(fn):
+            def w(*a, **kw):
+                try:
+                    if not card.winfo_exists(): return
+                except Exception:
+                    return
+                try: fn(*a, **kw)
+                except tk.TclError: pass
+            return w
+
+        state = {"commits": [], "loading": False}
+
+        @safe
+        def render_diff(lines):
+            diff_txt.config(state="normal")
+            diff_txt.delete("1.0", "end")
+            if not lines:
+                diff_txt.insert("end", "(Chưa chọn commit)\n", "info")
+            else:
+                for ln in lines:
+                    if ln.startswith("➕"):   tag = "add"
+                    elif ln.startswith("➖"): tag = "del"
+                    elif ln.startswith("✏️"):  tag = "mod"
+                    elif ln.startswith("  "):   tag = "mod"
+                    else:                       tag = "info"
+                    diff_txt.insert("end", ln + "\n", tag)
+            diff_txt.config(state="disabled")
+
+        @safe
+        def populate_tv():
+            for i in tv.get_children(): tv.delete(i)
+            a = author_var.get()
+            for i, c in enumerate(state["commits"]):
+                if a != "Tất cả" and c["author"] != a: continue
+                tv.insert("", "end", iid=str(i), values=(
+                    c["date"].replace("T", " ").replace("Z", "")[:19],
+                    c["author"],
+                    c["msg"].split("\n")[0],
+                    c["short"],
+                ))
+
+        def load_commits():
+            if state["loading"]: return
+            state["loading"] = True
+            try: status.config(text="Đang tải commits...", fg=self.XANH_DUONG)
+            except tk.TclError: return
+
+            def task():
+                return github_commits(GH_CONFIG, limit=int(limit_var.get()))
+
+            @safe
+            def done(commits):
+                state["commits"] = commits
+                authors = sorted({c["author"] for c in commits})
+                author_cbb["values"] = ["Tất cả"] + authors
+                if author_var.get() not in author_cbb["values"]:
+                    author_var.set("Tất cả")
+                populate_tv()
+                status.config(text=f"✓ {len(commits)} commit",
+                              fg=self.XANH_LA)
+                state["loading"] = False
+
+            @safe
+            def err(e):
+                status.config(text=f"✗ Lỗi: {e}", fg=self.DO)
+                state["loading"] = False
+
+            self._async(task, on_success=done, on_error=err)
+
+        def on_select(event):
+            sel = tv.selection()
+            if not sel: return
+            idx = int(sel[0])
+            if idx >= len(state["commits"]): return
+            commit = state["commits"][idx]
+            parent = state["commits"][idx + 1] \
+                     if idx + 1 < len(state["commits"]) else None
+            try:
+                status.config(text=f"Đang tải diff {commit['short']}...",
+                              fg=self.XANH_DUONG)
+            except tk.TclError:
+                return
+
+            def task():
+                new_c = github_content_at_sha(GH_CONFIG, commit["sha"])
+                old_c = github_content_at_sha(GH_CONFIG, parent["sha"]) \
+                        if parent else "{}"
+                return (new_c, old_c, commit, parent)
+
+            @safe
+            def done(res):
+                new_c, old_c, c, p = res
+                if not new_c:
+                    render_diff([f"⚠ Không tải được nội dung {c['short']}"])
+                    status.config(text="✗ Fetch fail", fg=self.DO)
+                    return
+                try:
+                    new_raw = json.loads(new_c) if new_c else {}
+                    old_raw = json.loads(old_c) if old_c else {}
+                except Exception as ex:
+                    render_diff([f"⚠ JSON lỗi: {ex}"])
+                    status.config(text="✗ Parse fail", fg=self.DO)
+                    return
+                new_d = _normalize_simple(new_raw)
+                old_d = _normalize_simple(old_raw) if old_raw else {}
+                diffs = diff_data(old_d, new_d)
+                head = (f"Commit {c['short']} bởi {c['author']} "
+                        f"· {c['date'][:19]}")
+                head += f"\nSo với {p['short']}" if p else "\n(commit đầu tiên)"
+                head += f"\n{'-'*60}"
+                render_diff([head] + diffs)
+                status.config(text=f"✓ {len(diffs)} thay đổi",
+                              fg=self.XANH_LA)
+
+            @safe
+            def err(e):
+                render_diff([f"⚠ Lỗi: {e}"])
+                status.config(text="✗ Lỗi", fg=self.DO)
+
+            self._async(task, on_success=done, on_error=err)
+
+        refresh_btn.config(command=load_commits)
+        limit_cbb.bind("<<ComboboxSelected>>", lambda e: load_commits())
+        author_cbb.bind("<<ComboboxSelected>>", lambda e: populate_tv())
+        tv.bind("<<TreeviewSelect>>", on_select)
+
+        render_diff([])
+        load_commits()
+    
     def khi_dong(self):
+        for attr in ("_settings_cover", "_settings_overlay",
+                     "_settings_shadow", "_settings_blur"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try: w.destroy()
+                except Exception: pass
+                setattr(self, attr, None)
         if self.hen_gio_click:
             self.root.after_cancel(self.hen_gio_click)
         if self._dirty:
