@@ -40,7 +40,6 @@ import sys
 import json
 import base64
 import time as _time
-import csv
 import threading
 import traceback
 import random
