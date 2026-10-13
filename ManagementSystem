@@ -44,7 +44,6 @@ import csv
 import threading
 import traceback
 import random
-import math
 from datetime import datetime, timezone
 from collections import deque
 from copy import deepcopy
@@ -57,6 +56,15 @@ try:
     PIL_OK = True
 except ImportError:
     PIL_OK = False
+# Thử import openpyxl cho file Excel thật
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import (Font, PatternFill, Alignment,
+                                  Border, Side)
+    from openpyxl.utils import get_column_letter
+    OPENPYXL_OK = True
+except ImportError:
+    OPENPYXL_OK = False
 
 # ═══════════════════════════════════════════════════════════════
 # PATHS & CONSTANTS
@@ -83,8 +91,10 @@ DEFAULT_SETTINGS = {
     "undo_stack_size":      30,
     "sort_key":             "ma",
     "sort_desc":            False,
-    "enable_animation":     True,     # ← THÊM
-    "enable_confetti":      True,      # ← THÊM
+    "enable_animation":     True,
+    "enable_confetti":      True,
+    "tong_tuan":            35,
+    "tuan_hk1":             18,
     "ly_do_goi_y":          ["Không phép", "Có phép", "Ốm", "Việc gia đình",
                               "Đi khám bệnh", "Đại hội", "Thi HSG"],
 }
@@ -135,6 +145,16 @@ def save_settings(s):
             json.dump(s, f, indent=2, ensure_ascii=False)
     except Exception as e:
         log_warn(f"Không ghi được settings.json: {e}")
+
+def _apply_runtime_settings(s):
+    """Cập nhật các biến global từ settings. Gọi lúc khởi động."""
+    global TONG_TUAN, TUAN_HK1
+    try:
+        TONG_TUAN = max(1, int(s.get("tong_tuan", 35)))
+        hk1 = int(s.get("tuan_hk1", 18))
+        TUAN_HK1 = max(0, min(TONG_TUAN, hk1))
+    except (ValueError, TypeError):
+        pass
 
 # ═══════════════════════════════════════════════════════════════
 # ANIMATION HELPERS
@@ -200,10 +220,15 @@ def _remove_flash(tree, iid, tag, orig_tags):
             tree.item(iid, tags=orig_tags)
     except Exception:
         pass
+    # Xóa tag để tránh memory leak tích tụ
+    try:
+        tree.tag_delete(tag)
+    except Exception:
+        pass
 
 
 def flash_row(tree, iid, color="#45475a", duration=420):
-    """Nhấp nháy 1 row Treeview."""
+    """Nhấp nháy 1 row Treeview (tự xóa tag sau khi xong)."""
     try:
         if not tree.exists(iid): return
         tag = f"_flash_{iid}_{_time.time_ns()}"
@@ -213,17 +238,6 @@ def flash_row(tree, iid, color="#45475a", duration=420):
         tree.after(duration, lambda: _remove_flash(tree, iid, tag, orig))
     except Exception:
         pass
-
-def _make_cover_image(w, h, hex_color, alpha):
-    """Tạo PhotoImage 1 màu hex với alpha 0-255 (cần Pillow)."""
-    if not PIL_OK or alpha < 0:
-        return None
-    try:
-        rgb = _hex_to_rgb(hex_color)
-        img = Image.new("RGBA", (w, h), (rgb[0], rgb[1], rgb[2], alpha))
-        return ImageTk.PhotoImage(img)
-    except Exception:
-        return None
 
 def _grab_widget_image(widget, w, h):
     """Chụp ảnh widget từ màn hình. Trả PIL.Image (RGB) hoặc None."""
@@ -896,7 +910,7 @@ def merge_data(local_data, remote_data):
             merged[sid] = r_hs
     return merged
 
-def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE):
+def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
     """
     Pull remote → merge với local → ghi local → push.
     Trả (ok_local, ok_gh, err, merged_dict_or_None).
@@ -945,7 +959,7 @@ def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE):
     content = json.dumps(payload, indent=2, ensure_ascii=False)
 
     # Backup
-    _backup_file(filename, keep=DEFAULT_SETTINGS["backup_count"])
+    _backup_file(filename, keep=backup_count)
 
     # Ghi local atomic
     ok_local = False
@@ -988,7 +1002,6 @@ class UndoStack:
 
     def do_undo(self):
         if not self.undo: return None
-        cur = (None, "before-undo", 0)  # placeholder
         return self.undo.pop()
 
     def do_redo(self):
@@ -1034,6 +1047,7 @@ class UngDungQuanLy:
 
         # Settings
         self.settings = load_settings()
+        _apply_runtime_settings(self.settings)   # ← THÊM
 
         # State
         self.HocSinh         = {}
@@ -1312,19 +1326,19 @@ class UngDungQuanLy:
             overlay.bind("<MouseWheel>", lambda e: "break")
             self._settings_blur = overlay
 
-        # ── Shadow (đặt OFFSCREEN — user không thấy lúc build UI) ──
+        # ── Shadow ──
         shadow = tk.Frame(self.root, bg="#0a0a14")
-        shadow.place(relx=0.5, rely=-2.0, anchor="center",
+        shadow.place(relx=0.5, rely=0.5, anchor="center",
                      width=card_w + 8, height=card_h + 8)
         shadow.lift()
         shadow.bind("<Button-1>", lambda e: None)
         self._settings_shadow = shadow
 
-        # ── Card giữa — viền xanh (đặt OFFSCREEN lúc đầu) ──
+        # ── Card giữa — viền xanh ──
         card = tk.Frame(self.root, bg=self.NEN,
                         highlightthickness=2,
-                        highlightbackground=self.XANH_DUONG)
-        card.place(relx=0.5, rely=-2.0, anchor="center",
+                        highlightbackground=self.NEN)
+        card.place(relx=0.5, rely=0.5, anchor="center",
                    width=card_w, height=card_h)
         card.pack_propagate(False)
         card.lift()
@@ -1846,55 +1860,31 @@ class UngDungQuanLy:
         # Mở tab mặc định
         switch_tab("effects")
 
-        # ═══ FADE IN — chụp card SAU KHI UI đã vẽ đầy đủ ═══
-        if self.settings.get("enable_animation", True) and PIL_OK:
-            # Đưa card + shadow vào giữa CHỈ ĐỂ GRAB (chỉ vài ms)
-            card.place_configure(rely=0.5)
-            shadow.place_configure(rely=0.5)
-            card.update_idletasks()
-            try:
-                self.root.update_idletasks()
-            except Exception:
-                pass
+        # ═══ GLOW-IN — viền card sáng dần từ NEN → XANH_DUONG ═══
+        if self.settings.get("enable_animation", True):
+            card.configure(highlightbackground=self.NEN)
 
-            img_card = _grab_widget_image(card, card_w, card_h)
+            _from_rgb = _hex_to_rgb(self.NEN)
+            _to_rgb   = _hex_to_rgb(self.XANH_DUONG)
 
-            if img_card is not None:
-                # Ẩn CARD thật — shadow vẫn giữ làm viền
-                card.place_forget()
+            def _glow_step(i=0, total=14):
+                if i > total:
+                    try:
+                        card.configure(highlightbackground=self.XANH_DUONG)
+                    except Exception:
+                        pass
+                    return
+                k = i / total
+                k = 1 - (1 - k) ** 3        # ease-out cubic
+                try:
+                    rgb = tuple(_lerp(_from_rgb[j], _to_rgb[j], k)
+                                for j in range(3))
+                    card.configure(highlightbackground=_rgb_to_hex(rgb))
+                except Exception:
+                    return
+                self.root.after(16, lambda: _glow_step(i + 1, total))
 
-                cover = tk.Label(self.root, borderwidth=0, bg=self.NEN)
-                cover.place(relx=0.5, rely=0.5, anchor="center",
-                            width=card_w, height=card_h)
-                cover.lift()
-                self._settings_cover = cover
-
-                total_fi = 15
-                def _fade_in_step(i):
-                    if i > total_fi:
-                        try: cover.destroy()
-                        except Exception: pass
-                        self._settings_cover = None
-                        # Hiện lại card thật Ở GIỮA, trên shadow
-                        card.place(relx=0.5, rely=0.5, anchor="center",
-                                   width=card_w, height=card_h)
-                        card.lift()
-                        return
-                    t = i / total_fi
-                    k = 1 - (1 - t) ** 3
-                    photo = _blend_card_with_bg(
-                        img_card, card_w, card_h, k, self.NEN)
-                    if photo:
-                        cover.configure(image=photo)
-                        cover.image = photo
-                    self.root.after(16, lambda: _fade_in_step(i + 1))
-
-                self.root.after(20, lambda: _fade_in_step(0))
-            # else: grab fail → card + shadow đã ở 0.5 rồi, hiện luôn
-        else:
-            # Không Pillow / tắt anim → hiện ngay
-            card.place_configure(rely=0.5)
-            shadow.place_configure(rely=0.5)
+            self.root.after(30, lambda: _glow_step(0))
 
         # Lưu hàm đóng để Esc gọi
         self._close_settings_fn = close_settings
@@ -2074,8 +2064,8 @@ class UngDungQuanLy:
                 self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "📁  Xuất CSV", self.xuat_csv,
-                      self.CAM, "#f5a76c").pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📊  Xuất Excel", self.xuat_excel,
+                      "#2E7D32", "#43A047").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
                       self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
 
@@ -2672,7 +2662,14 @@ class UngDungQuanLy:
         sel = self.bang.selection()
         if not sel:
             self.thong_bao("⚠ Chưa chọn HS nào", self.VANG); return
-        ds_ma = [int(self.bang.item(i, "values")[0]) for i in sel]
+        ds_ma = []
+        for i in sel:
+            try:
+                ds_ma.append(int(self.bang.item(i, "values")[0]))
+            except (ValueError, IndexError, TypeError):
+                continue
+        if not ds_ma:
+            self.thong_bao("⚠ Không đọc được mã HS", self.DO); return
         ds_ten = [self.HocSinh[s]["name"] for s in ds_ma if s in self.HocSinh]
         if not messagebox.askyesno("Xác nhận xóa",
             f"Xóa {len(ds_ma)} học sinh?\n\n" + "\n".join(f"• {n}" for n in ds_ten)):
@@ -2697,7 +2694,8 @@ class UngDungQuanLy:
         ly_do_md = self.settings["ly_do_mac_dinh"]
 
         def task():
-            return ghi_file(local_snapshot, ly_do_md, DATA_FILE)
+            return ghi_file(local_snapshot, ly_do_md, DATA_FILE,
+                            backup_count=self.settings["backup_count"])
 
         def on_done(res):
             ok_local, ok_gh, err, merged = res
@@ -3552,29 +3550,271 @@ class UngDungQuanLy:
         H = yy + 40
         canvas.configure(scrollregion=(0, 0, W, H))
 
-    def xuat_csv(self):
+    def xuat_excel(self):
+        """Xuất Excel: dùng openpyxl nếu có, ngược lại HTML .xls."""
         if not self.HocSinh:
             self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
+
+        if OPENPYXL_OK:
+            self._xuat_xlsx()
+        else:
+            self._xuat_xls_html()
+
+    # ─────────────────────────────────────────────────────
+    def _xuat_xlsx(self):
+        """Xuất .xlsx thật bằng openpyxl — có màu, width, freeze header."""
+        ext = ".xlsx"
         path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv")],
-            initialfile=f"diem_danh_tuan_{self.tuan_hien_tai}.csv")
+            defaultextension=ext,
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile=f"diem_danh_tuan_{self.tuan_hien_tai}.xlsx")
         if not path: return
 
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+        tuan = self.tuan_hien_tai
+
         try:
-            with open(path, "w", encoding="utf-8-sig", newline="") as f:
-                wr = csv.writer(f)
-                wr.writerow(["Mã", "Họ tên", "Lớp", "Tổ", "Tuần"] + THU)
-                for ma in sorted(self.HocSinh.keys()):
-                    d = self.HocSinh[ma]
-                    w = self._du_lieu_tuan(ma)
-                    ky_hieu = [self._ky_hieu_o(ma, day) for day in THU]
-                    wr.writerow([ma, d["name"], d["class"],
-                                  d.get("to", ""),
-                                  f"Tuần {self.tuan_hien_tai}"] + ky_hieu)
-            self.thong_bao(f"✓ Đã xuất CSV: {os.path.basename(path)}", self.XANH_LA)
+            wb = Workbook()
+            ws = wb.active
+            ws.title = f"Tuần {tuan}"
+
+            # ── Styles ──
+            thin = Side(border_style="thin", color="999999")
+            border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            header_fill = PatternFill("solid", fgColor="4472C4")
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            center = Alignment(horizontal="center", vertical="center")
+            left   = Alignment(horizontal="left",   vertical="center")
+
+            fill_cm  = PatternFill("solid", fgColor="C6EFCE")  # xanh lá nhạt
+            fill_vp  = PatternFill("solid", fgColor="FFEB9C")  # vàng nhạt
+            fill_vkp = PatternFill("solid", fgColor="FFC7CE")  # đỏ nhạt
+            fill_err = PatternFill("solid", fgColor="FFD4A3")  # cam nhạt
+
+            # ── Tiêu đề ──
+            ws["A1"] = f"BẢNG ĐIỂM DANH — TUẦN {tuan}"
+            ws["A1"].font = Font(bold=True, size=14, color="1F3864")
+            ws.merge_cells(start_row=1, start_column=1,
+                           end_row=1, end_column=6 + len(THU) + 4)
+
+            ws["A2"] = f"Ngày xuất: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            ws["A2"].font = Font(italic=True, color="666666")
+            ws.merge_cells(start_row=2, start_column=1,
+                           end_row=2, end_column=6 + len(THU) + 4)
+
+            # ── Header row ──
+            headers = (["STT", "Mã", "Họ tên", "Lớp", "Tổ", "Tuần"]
+                       + THU
+                       + ["Có mặt", "Vắng phép", "Vắng KP", "Lỗi"])
+            header_row = 4
+            for col, h in enumerate(headers, 1):
+                c = ws.cell(row=header_row, column=col, value=h)
+                c.fill = header_fill
+                c.font = header_font
+                c.alignment = center
+                c.border = border
+
+            # ── Data ──
+            tong_cm = tong_vp = tong_vkp = tong_loi = 0
+            row_i = header_row + 1
+            for stt, ma in enumerate(sorted(self.HocSinh.keys()), 1):
+                d = self.HocSinh[ma]
+                w = self._du_lieu_tuan(ma, tuan)
+                if not w: continue
+
+                n_cm = n_vp = n_vkp = n_loi = 0
+                ky_list = []
+                for day in THU:
+                    ky = self._ky_hieu_o(ma, day)
+                    ky_list.append(ky)
+                    if w["attendance"].get(day, False):
+                        n_cm += 1
+                    else:
+                        r = w["reasons"].get(day, "").strip()
+                        if r and r != ly_do_md:
+                            n_vp += 1
+                        else:
+                            n_vkp += 1
+                    if w["errors"].get(day, "").strip():
+                        n_loi += 1
+
+                row_data = ([stt, ma, d["name"], d["class"],
+                             d.get("to", "") or "—", f"Tuần {tuan}"]
+                            + ky_list
+                            + [n_cm, n_vp, n_vkp, n_loi])
+
+                for col, val in enumerate(row_data, 1):
+                    c = ws.cell(row=row_i, column=col, value=val)
+                    c.border = border
+                    if col in (1, 2, 4, 5, 6) or col > 6:
+                        c.alignment = center
+                    else:
+                        c.alignment = left
+
+                    # Tô màu ký hiệu điểm danh
+                    if 7 <= col <= 6 + len(THU):
+                        ky = str(val)
+                        if ky.startswith("✓"):   c.fill = fill_cm
+                        elif ky.startswith("✗"): c.fill = fill_vp
+                        elif ky.startswith("⊘"): c.fill = fill_vkp
+                        elif ky.startswith("!"): c.fill = fill_err
+
+                tong_cm  += n_cm
+                tong_vp  += n_vp
+                tong_vkp += n_vkp
+                tong_loi += n_loi
+                row_i += 1
+
+            # ── Dòng tổng kết ──
+            row_i += 1
+            ws.cell(row=row_i, column=2, value="TỔNG").font = Font(bold=True)
+            ws.cell(row=row_i, column=3,
+                    value=f"{len(self.HocSinh)} HS").font = Font(bold=True)
+            for col, val in enumerate([tong_cm, tong_vp, tong_vkp, tong_loi],
+                                       start=6 + len(THU) + 1):
+                c = ws.cell(row=row_i, column=col, value=val)
+                c.font = Font(bold=True)
+                c.alignment = center
+
+            # ── Column widths ──
+            widths = [5, 8, 22, 8, 6, 10] + [4] * len(THU) + [8, 10, 10, 6]
+            for i, wd in enumerate(widths, 1):
+                ws.column_dimensions[get_column_letter(i)].width = wd
+
+            # ── Freeze header ──
+            ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+
+            wb.save(path)
+            self.thong_bao(
+                f"✓ Đã xuất Excel: {os.path.basename(path)}", self.XANH_LA)
         except Exception as e:
-            self.thong_bao(f"✗ Lỗi xuất CSV: {e}", self.DO)
+            self.thong_bao(f"✗ Lỗi xuất Excel: {e}", self.DO)
+
+    # ─────────────────────────────────────────────────────
+    def _xuat_xls_html(self):
+        """Fallback: HTML table lưu đuôi .xls — Excel mở đẹp, có màu."""
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xls",
+            filetypes=[("Excel files", "*.xls"), ("All files", "*.*")],
+            initialfile=f"diem_danh_tuan_{self.tuan_hien_tai}.xls")
+        if not path: return
+
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+        tuan = self.tuan_hien_tai
+
+        def esc(s):
+            return (str(s).replace("&", "&amp;")
+                           .replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+
+        def fill_of(ky):
+            if ky.startswith("✓"):   return "#C6EFCE"
+            if ky.startswith("✗"):   return "#FFEB9C"
+            if ky.startswith("⊘"):   return "#FFC7CE"
+            if ky.startswith("!"):   return "#FFD4A3"
+            return ""
+
+        try:
+            parts = []
+            parts.append('<html><head><meta charset="UTF-8">')
+            parts.append('<style>')
+            parts.append('table { border-collapse: collapse; '
+                         'font-family: Calibri; font-size: 11pt; }')
+            parts.append('th, td { border: 1px solid #999; '
+                         'padding: 4px 6px; }')
+            parts.append('th { background: #4472C4; color: white; '
+                         'font-weight: bold; text-align: center; }')
+            parts.append('td.c { text-align: center; }')
+            parts.append('.title { font-size: 16pt; font-weight: bold; '
+                         'color: #1F3864; }')
+            parts.append('.meta { color: #666; font-style: italic; }')
+            parts.append('</style></head><body>')
+
+            parts.append(f'<p class="title">'
+                         f'BẢNG ĐIỂM DANH — TUẦN {tuan}</p>')
+            parts.append(f'<p class="meta">Ngày xuất: '
+                         f'{datetime.now().strftime("%d/%m/%Y %H:%M")}</p>')
+
+            parts.append('<table>')
+
+            # Header
+            parts.append('<tr>')
+            for h, w in [("STT", 40), ("Mã", 60), ("Họ tên", 180),
+                         ("Lớp", 60), ("Tổ", 40), ("Tuần", 70),
+                         ("T2", 35), ("T3", 35), ("T4", 35), ("T5", 35),
+                         ("T6", 35), ("T7", 35), ("CN", 35),
+                         ("Có mặt", 60), ("Vắng phép", 70),
+                         ("Vắng KP", 70), ("Lỗi", 50)]:
+                parts.append(f'<th width="{w}">{h}</th>')
+            parts.append('</tr>')
+
+            # Data
+            tong_cm = tong_vp = tong_vkp = tong_loi = 0
+            for stt, ma in enumerate(sorted(self.HocSinh.keys()), 1):
+                d = self.HocSinh[ma]
+                w = self._du_lieu_tuan(ma, tuan)
+                if not w: continue
+
+                n_cm = n_vp = n_vkp = n_loi = 0
+                cells = []
+                for day in THU:
+                    ky = self._ky_hieu_o(ma, day)
+                    bg = fill_of(ky)
+                    style = (f' style="background:{bg};text-align:center"'
+                             if bg else ' class="c"')
+                    cells.append(f'<td{style}>{esc(ky)}</td>')
+
+                    if w["attendance"].get(day, False):
+                        n_cm += 1
+                    else:
+                        r = w["reasons"].get(day, "").strip()
+                        if r and r != ly_do_md:
+                            n_vp += 1
+                        else:
+                            n_vkp += 1
+                    if w["errors"].get(day, "").strip():
+                        n_loi += 1
+
+                parts.append('<tr>')
+                parts.append(f'<td class="c">{stt}</td>')
+                parts.append(f'<td class="c">{ma}</td>')
+                parts.append(f'<td>{esc(d["name"])}</td>')
+                parts.append(f'<td class="c">{esc(d["class"])}</td>')
+                parts.append(f'<td class="c">'
+                             f'{esc(d.get("to","")) or "—"}</td>')
+                parts.append(f'<td class="c">Tuần {tuan}</td>')
+                parts.extend(cells)
+                parts.append(f'<td class="c">{n_cm}</td>')
+                parts.append(f'<td class="c">{n_vp}</td>')
+                parts.append(f'<td class="c">{n_vkp}</td>')
+                parts.append(f'<td class="c">{n_loi}</td>')
+                parts.append('</tr>')
+
+                tong_cm  += n_cm
+                tong_vp  += n_vp
+                tong_vkp += n_vkp
+                tong_loi += n_loi
+
+            # Tổng kết
+            parts.append('<tr style="background:#D9E1F2;font-weight:bold">')
+            parts.append('<td colspan="2" class="c">TỔNG</td>')
+            parts.append(f'<td colspan="4">{len(self.HocSinh)} HS</td>')
+            parts.append(f'<td colspan="{len(THU)}"></td>')
+            parts.append(f'<td class="c">{tong_cm}</td>')
+            parts.append(f'<td class="c">{tong_vp}</td>')
+            parts.append(f'<td class="c">{tong_vkp}</td>')
+            parts.append(f'<td class="c">{tong_loi}</td>')
+            parts.append('</tr>')
+
+            parts.append('</table></body></html>')
+
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("".join(parts))
+
+            self.thong_bao(
+                f"✓ Đã xuất Excel: {os.path.basename(path)}", self.XANH_LA)
+        except Exception as e:
+            self.thong_bao(f"✗ Lỗi xuất Excel: {e}", self.DO)
 
     # ═══ Auto-save ═══
     def _schedule_auto_save(self):
@@ -4193,12 +4433,29 @@ class UngDungQuanLy:
                 except Exception: pass
                 setattr(self, attr, None)
         if self.hen_gio_click:
-            self.root.after_cancel(self.hen_gio_click)
+            try: self.root.after_cancel(self.hen_gio_click)
+            except Exception: pass
+
         if self._dirty:
-            try:
-                ghi_file(self.HocSinh, self.settings["ly_do_mac_dinh"], DATA_FILE)
-            except Exception as e:
-                log_error(f"Save on close: {e}")
+            # Save trong thread — không block UI, chờ tối đa 3 giây
+            done = {"ok": False}
+
+            def _save():
+                try:
+                    ghi_file(self.HocSinh, self.settings["ly_do_mac_dinh"],
+                             DATA_FILE,
+                             backup_count=self.settings["backup_count"])
+                except Exception as e:
+                    log_error(f"Save on close: {e}")
+                finally:
+                    done["ok"] = True
+
+            t = threading.Thread(target=_save, daemon=True)
+            t.start()
+            t.join(timeout=3.0)
+            if not done["ok"]:
+                log_warn("Save on close timeout — đóng app ngay")
+
         save_settings(self.settings)
         self.root.destroy()
 
