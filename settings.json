@@ -1,0 +1,24 @@
+{
+  "ly_do_mac_dinh": "Không phép",
+  "click_delay_ms": 180,
+  "filter_debounce_ms": 150,
+  "auto_save_interval_s": 300,
+  "max_editable_week": 35,
+  "backup_count": 5,
+  "undo_stack_size": 30,
+  "sort_key": "ma",
+  "sort_desc": false,
+  "enable_animation": true,
+  "enable_confetti": true,
+  "tong_tuan": 35,
+  "tuan_hk1": 18,
+  "ly_do_goi_y": [
+    "Không phép",
+    "Có phép",
+    "Ốm",
+    "Việc gia đình",
+    "Đi khám bệnh",
+    "Đại hội",
+    "Thi HSG"
+  ]
+}
