@@ -1977,19 +1977,90 @@ def _svg_bar_chart_vertical(items, width=900, height=280,
 # AUTO UPDATE HELPERS
 # ═══════════════════════════════════════════════════════════════
 def _get_self_path():
-    """Đường dẫn file script .py đang chạy. None nếu frozen .exe."""
-    if getattr(sys, "frozen", False):
-        return None
+    """
+    Dò đường dẫn file script .py đang chạy.
+    Thử theo thứ tự:
+      1. settings.json → script_path (người dùng đã chỉ định)
+      2. __file__ (chạy từ source bình thường)
+      3. Cạnh file .exe / cạnh DATA_FILE, tên quanly.py
+      4. Cạnh DATA_FILE, tên ManagementSystem.py / .pyw
+    Trả str (absolute path) hoặc None.
+    """
+    # ── 1. Ưu tiên settings nếu người dùng đã chốt path ──
     try:
-        return os.path.abspath(__file__)
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                s = json.load(f)
+            sp = (s.get("script_path") or "").strip()
+            if sp and os.path.exists(sp) and os.path.isfile(sp):
+                return os.path.abspath(sp)
+    except Exception:
+        pass
+
+    # ── 2. __file__ (chạy source bình thường) ──
+    try:
+        p = os.path.abspath(__file__)
+        if os.path.exists(p) and p.endswith(".py"):
+            return p
     except NameError:
-        return None
+        pass
+    except Exception:
+        pass
+
+    # ── 3. Dò cạnh SCRIPT_DIR (thư mục chứa .exe hoặc file .py này) ──
+    candidates = [
+        "quanly.py",
+        "quanly.pyw",
+        "ManagementSystem.py",
+        "ManagementSystem.pyw",
+        "main.py",
+    ]
+    for name in candidates:
+        p = os.path.join(SCRIPT_DIR, name)
+        if os.path.exists(p) and os.path.isfile(p):
+            # Ghi nhớ để lần sau khỏi dò
+            _remember_script_path(p)
+            return p
+
+    # ── 4. Dò cạnh DATA_FILE (nếu khác SCRIPT_DIR) ──
+    data_dir = os.path.dirname(os.path.abspath(DATA_FILE))
+    if data_dir != SCRIPT_DIR:
+        for name in candidates:
+            p = os.path.join(data_dir, name)
+            if os.path.exists(p) and os.path.isfile(p):
+                _remember_script_path(p)
+                return p
+
+    return None
+
+
+def _remember_script_path(path):
+    """Lưu path script vào settings.json để lần sau dùng luôn."""
+    try:
+        s = {}
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                s = json.load(f) or {}
+        if s.get("script_path") != path:
+            s["script_path"] = path
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(s, f, indent=2, ensure_ascii=False)
+            log_info(f"✓ Đã lưu script_path = {path}")
+    except Exception as e:
+        log_warn(f"Remember script path fail: {e}")
 
 
 def _get_self_hash():
     """SHA256 của file script hiện tại. None nếu không đọc được."""
     p = _get_self_path()
-    if not p or not os.path.exists(p):
+    if not p:
+        log_warn("Hash self: không tìm thấy script .py")
+        return None
+    if not os.path.exists(p):
+        log_warn(f"Hash self: file không tồn tại — {p}")
+        return None
+    if not os.access(p, os.R_OK):
+        log_warn(f"Hash self: không có quyền đọc — {p}")
         return None
     try:
         with open(p, "rb") as f:
@@ -2827,13 +2898,33 @@ class UngDungQuanLy:
         """Ghi file mới + backup file cũ."""
         script_path = _get_self_path()
         if not script_path:
-            messagebox.showinfo(
-                "Không hỗ trợ tự cập nhật",
-                "Bạn đang chạy từ file .exe.\n\n"
-                "Vui lòng tải bản mới tại:\n"
-                "https://github.com/vuthang28012014-ctrl/ManagementSystem",
+            # Cho phép người dùng chọn file .py thủ công
+            ans = messagebox.askyesno(
+                "Không tìm thấy file script",
+                "Không tự dò được file .py đang chạy.\n\n"
+                "Bạn có muốn CHỌN THỦ CÔNG file script không?\n"
+                "(Ví dụ: quanly.py)\n\n"
+                "Nếu chạy từ .exe thì bấm 'No' để mở link tải.",
                 parent=dlg)
-            return
+            if ans:
+                picked = filedialog.askopenfilename(
+                    title="Chọn file script .py đang chạy",
+                    filetypes=[("Python files", "*.py *.pyw"),
+                                ("All files", "*.*")],
+                    parent=dlg)
+                if picked and os.path.exists(picked):
+                    _remember_script_path(picked)
+                    script_path = os.path.abspath(picked)
+                else:
+                    return
+            else:
+                messagebox.showinfo(
+                    "Tải thủ công",
+                    "Vui lòng tải bản mới tại:\n"
+                    "https://github.com/vuthang28012014-ctrl/"
+                    "ManagementSystem",
+                    parent=dlg)
+                return
 
         # 1. Backup file cũ
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
