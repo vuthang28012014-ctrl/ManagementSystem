@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "updated_at": "2026-10-13T04:30:36.232236+00:00"
+    "updated_at": "2026-10-15T14:22:45.223496+00:00"
   },
   "34": {
     "name": "Trịnh Đức Anh",
@@ -9,13 +9,13 @@
     "weeks": {
       "1": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -38,13 +38,13 @@
       },
       "2": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -67,13 +67,13 @@
       },
       "3": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -96,13 +96,13 @@
       },
       "4": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -125,13 +125,13 @@
       },
       "5": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -1031,13 +1031,13 @@
     "weeks": {
       "1": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -1060,13 +1060,13 @@
       },
       "2": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -1089,13 +1089,13 @@
       },
       "3": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -1118,13 +1118,13 @@
       },
       "4": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -1147,13 +1147,13 @@
       },
       "5": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -2053,13 +2053,13 @@
     "weeks": {
       "1": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -2082,13 +2082,13 @@
       },
       "2": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -2111,13 +2111,13 @@
       },
       "3": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -2140,13 +2140,13 @@
       },
       "4": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -2169,13 +2169,13 @@
       },
       "5": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -3075,13 +3075,13 @@
     "weeks": {
       "1": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -3104,13 +3104,13 @@
       },
       "2": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -3133,13 +3133,13 @@
       },
       "3": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -3162,13 +3162,13 @@
       },
       "4": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
@@ -3191,13 +3191,13 @@
       },
       "5": {
         "attendance": {
-          "T2": false,
-          "T3": false,
-          "T4": false,
-          "T5": false,
-          "T6": false,
-          "T7": false,
-          "CN": false
+          "T2": true,
+          "T3": true,
+          "T4": true,
+          "T5": true,
+          "T6": true,
+          "T7": true,
+          "CN": true
         },
         "reasons": {
           "T2": "Không phép",
