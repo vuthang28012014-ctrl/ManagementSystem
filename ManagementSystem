@@ -3958,18 +3958,6 @@ class UngDungQuanLy:
                      font=("Consolas", 9), anchor="w"
                      ).pack(side="left", fill="x", expand=True)
 
-        tk.Button(gh_box, text="🔑  Đổi token GitHub",
-                  command=lambda: (close_settings(),
-                                   self.root.after(150,
-                                                   self.doi_token_github)),
-                  bg=self.NEN3, fg=self.CHU,
-                  activebackground=self.XANH_DUONG,
-                  activeforeground="#1e1e2e",
-                  relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9, "bold"),
-                  padx=15, pady=6, bd=0
-                  ).pack(pady=(4, 12))
-
         # Đường dẫn file
         tk.Label(inner_cfg, text="📁  Đường dẫn file", bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
@@ -4013,6 +4001,50 @@ class UngDungQuanLy:
                   font=("Segoe UI", 9, "bold"), padx=15, pady=6, bd=0,
                   command=open_folder
                   ).pack(pady=(6, 20))
+        # ═══════════════════════════════════════════════════════
+        # CÔNG CỤ — Token / Update / History
+        # ═══════════════════════════════════════════════════════
+        tk.Label(inner_cfg, text="🛠  Công cụ & GitHub",
+                 bg=self.NEN, fg=self.TIM,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(12, 4))
+
+        tools_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=10)
+        tools_box.pack(fill="x", pady=(0, 20))
+
+        def _wrap_close(fn):
+            """Đóng settings rồi gọi fn sau khi panel biến mất."""
+            def _wrapped():
+                try:
+                    close_settings()
+                except Exception:
+                    pass
+                self.root.after(220, fn)
+            return _wrapped
+
+        def _tool_btn(text, cmd, bg, hover, first=False):
+            fg = "#1e1e2e" if bg not in (self.NEN3, self.NEN2) else self.CHU
+            b = tk.Button(tools_box, text=text, command=cmd,
+                          bg=bg, fg=fg,
+                          activebackground=hover,
+                          activeforeground="#1e1e2e",
+                          relief="flat", cursor="hand2",
+                          font=("Segoe UI", 9, "bold"),
+                          padx=15, pady=7, bd=0, anchor="w")
+            b.pack(fill="x", pady=(0 if first else 6, 0))
+            return b
+
+        _tool_btn("🔑  Đổi token GitHub",
+                  _wrap_close(self.doi_token_github),
+                  self.XANH_DUONG, self.XANH_DUONG_H, first=True)
+
+        _tool_btn("🔃  Kiểm tra cập nhật",
+                  _wrap_close(lambda: self.kiem_tra_cap_nhat(force=True)),
+                  "#5E35B1", "#7E57C2")
+
+        _tool_btn("📜  Lịch sử thay đổi",
+                  _wrap_close(self.mo_lich_su),
+                  self.TIM, "#b58dfa")
 
         # ═══════════════════════════════════════════════════════
         # TAB 3 — UPDATE LOG
@@ -4308,11 +4340,6 @@ class UngDungQuanLy:
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
                       self.XANH_DUONG, self.XANH_DUONG_H
                       ).pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "🔑  Token GitHub", self.doi_token_github,
-                      self.NEN3, self.NEN3
-                      ).pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "📜  Lịch sử thay đổi", self.mo_lich_su,
-                self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📚  Xuất cả năm", self.xuat_excel_all,
@@ -4320,10 +4347,7 @@ class UngDungQuanLy:
         self._tao_nut(form, "🖨  In báo cáo", self.xuat_bao_cao_html,
                       "#4527A0", "#5E35B1").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
-                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "🔃  Kiểm tra cập nhật",
-                      lambda: self.kiem_tra_cap_nhat(force=True),
-                      "#5E35B1", "#7E57C2").pack(fill="x", padx=20, pady=(0, 20))
+                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
 
     def _tao_cot_giua(self, parent):
         giua = tk.Frame(parent, bg=self.NEN)
