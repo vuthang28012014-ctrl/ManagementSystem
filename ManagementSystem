@@ -1976,6 +1976,11 @@ def _svg_bar_chart_vertical(items, width=900, height=280,
 # ═══════════════════════════════════════════════════════════════
 # AUTO UPDATE HELPERS
 # ═══════════════════════════════════════════════════════════════
+
+def _norm_text(s):
+    """Chuẩn hóa mọi kiểu xuống dòng về \\n (LF)."""
+    return s.replace("\r\n", "\n").replace("\r", "\n")
+
 def _get_self_path():
     """
     Dò đường dẫn file script .py đang chạy.
@@ -2051,27 +2056,21 @@ def _remember_script_path(path):
 
 
 def _get_self_hash():
-    """SHA256 của file script hiện tại. None nếu không đọc được."""
+    """SHA256 của file script (đã normalize CRLF→LF)."""
     p = _get_self_path()
-    if not p:
-        log_warn("Hash self: không tìm thấy script .py")
-        return None
-    if not os.path.exists(p):
-        log_warn(f"Hash self: file không tồn tại — {p}")
-        return None
-    if not os.access(p, os.R_OK):
-        log_warn(f"Hash self: không có quyền đọc — {p}")
+    if not p or not os.path.exists(p):
         return None
     try:
         with open(p, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+            txt = f.read().decode("utf-8", errors="replace")
+        return hashlib.sha256(_norm_text(txt).encode("utf-8")).hexdigest()
     except Exception as e:
         log_warn(f"Hash self fail: {e}")
         return None
 
 
 def _hash_str(s):
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+    return hashlib.sha256(_norm_text(s).encode("utf-8")).hexdigest()
 
 
 def _parse_version(content):
@@ -2923,21 +2922,10 @@ class UngDungQuanLy:
     def _apply_update(self, remote_content, dlg):
         """Ghi file mới + backup file cũ."""
         script_path = _get_self_path()
-        # ── Tự động phát hiện + fix file bị double-newline ──
-        lines_check = remote_content.split("\n")
-        if len(lines_check) > 100:
-            n_empty = sum(1 for L in lines_check if not L.strip())
-            ratio = n_empty / len(lines_check)
-            # File bình thường: ~12-18% dòng trống
-            # File lỗi (double-newline): > 40%
-            if ratio > 0.35:
-                log_warn(f"Phát hiện file remote bị double-newline "
-                         f"({ratio*100:.0f}% dòng trống) — tự động làm sạch")
-                remote_content = _fix_double_newlines(remote_content)
-                lines_check2 = remote_content.split("\n")
-                n_empty2 = sum(1 for L in lines_check2 if not L.strip())
-                log_info(f"Sau khi làm sạch: {n_empty2/len(lines_check2)*100:.0f}% dòng trống "
-                         f"({len(lines_check)} → {len(lines_check2)} dòng)")
+
+        # ── Chuẩn hóa xuống dòng về LF để tránh \r\r\n khi ghi ──
+        remote_content = _norm_text(remote_content)
+
         if not script_path:
             # Cho phép người dùng chọn file .py thủ công
             ans = messagebox.askyesno(
@@ -2984,7 +2972,7 @@ class UngDungQuanLy:
         # 2. Ghi file mới (atomic qua tmp)
         try:
             tmp = script_path + ".new"
-            with open(tmp, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 f.write(remote_content)
                 f.flush()
                 os.fsync(f.fileno())
