@@ -1,38 +1,6 @@
 """
-Hệ Thống Quản Lý Học Sinh v2.0 — Full Fixes
 ═════════════════════════════════════════════════════════════════
-CHANGELOG so với v1.0:
-  [CRITICAL]
-  • Token GitHub: đọc từ ENV GITHUB_TOKEN, fallback file (không log)
-  • UI không đơ: mọi thao tác GitHub chạy trong thread riêng
-  • Backup tự động: output.txt.bak.<timestamp> trước mỗi lần ghi
-  • Conflict: gắn updated_at, cảnh báo khi bị ghi đè bởi client khác
-
-  [IMPORTANT]
-  • Validate schema JSON khi load (chống crash)
-  • Debounce filter 150ms (không lag khi gõ nhanh)
-  • Click delay 220ms → 180ms (cấu hình được)
-  • Giới hạn tuần có thể sửa (max_editable_week)
-  • Undo stack (Ctrl+Z / Ctrl+Y)
-  • Health check GitHub lúc khởi động
-  • Duplicate key → hiện lên status bar
-  • Keyboard shortcuts: Ctrl+S/F/N/Z/Y, Esc
-  • Rate limit GitHub (HTTP 403) xử lý riêng
-
-  [MEDIUM]
-  • Lý do mặc định cấu hình được
-  • Lưu trạng thái sort (key + direction)
-  • Export CSV (tuần hiện tại / toàn bộ)
-  • Báo cáo thống kê (tỉ lệ chuyên cần)
-  • Xóa form → clear selection bảng
-  • Tìm kiếm theo Lớp
-  • Auto-save định kỳ
-  • Highlight HS đang xem ở bảng điểm danh
-
-  [MINOR]
-  • Log file app.log
-  • Magic numbers → settings.json
-  • Comment/docstring rõ ràng
+Hệ Thống Quản Lý Học Sinh v2.0 — Full Fixes
 ═════════════════════════════════════════════════════════════════
 """
 import os
@@ -257,11 +225,12 @@ def flash_row(tree, iid, color="#45475a", duration=420):
     """Nhấp nháy 1 row Treeview (tự xóa tag sau khi xong)."""
     try:
         if not tree.exists(iid): return
-        tag = f"_flash_{iid}_{_time.time_ns()}"
-        tree.tag_configure(tag, background=color)
+        FLASH_TAG = "_flash_row"
+        tree.tag_configure(FLASH_TAG, background=color)
         orig = list(tree.item(iid, "tags"))
-        tree.item(iid, tags=orig + [tag])
-        tree.after(duration, lambda: _remove_flash(tree, iid, tag, orig))
+        if FLASH_TAG not in orig:
+            tree.item(iid, tags=orig + [FLASH_TAG])
+        tree.after(duration, lambda: _remove_flash(tree, iid, FLASH_TAG, orig))
     except Exception:
         pass
 
@@ -3001,16 +2970,25 @@ class UngDungQuanLy:
 
     # ═══ Threading helpers ═══
     def _async(self, fn, on_success=None, on_error=None):
+        def _safe_call(cb, arg):
+            try:
+                # Kiểm tra root còn sống trước khi gọi after
+                if not self.root.winfo_exists():
+                    return
+                self.root.after(0, lambda: cb(arg))
+            except Exception:
+                pass  # root đã bị destroy → bỏ qua
+
         def worker():
             try:
                 result = fn()
                 if on_success:
-                    self.root.after(0, lambda: on_success(result))
+                    _safe_call(on_success, result)
             except Exception as e:
                 tb = traceback.format_exc()
                 log_error(f"Async task fail: {e}\n{tb}")
                 if on_error:
-                    self.root.after(0, lambda: on_error(e))
+                    _safe_call(on_error, e)
         threading.Thread(target=worker, daemon=True).start()
 
     def _health_check_gh(self):
@@ -6774,8 +6752,12 @@ class UngDungQuanLy:
                     if not card.winfo_exists(): return
                 except Exception:
                     return
-                try: fn(*a, **kw)
-                except tk.TclError: pass
+                try:
+                    fn(*a, **kw)
+                except tk.TclError:
+                    pass
+                except Exception as e:
+                    log_error(f"History callback fail: {e}\n{traceback.format_exc()}")
             return w
 
         state = {"commits": [], "loading": False}
