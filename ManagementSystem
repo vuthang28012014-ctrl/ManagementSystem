@@ -286,6 +286,194 @@ except ImportError:
     URLLIB_OK = False
 
 GH_CONFIG = None
+# ═══════════════════════════════════════════════════════════════
+# GITHUB CONFIG — TOKEN SETUP
+# ═══════════════════════════════════════════════════════════════
+GH_DEFAULT_OWNER  = "vuthang28012014-ctrl"
+GH_DEFAULT_REPO   = "ManagementSystem"
+GH_DEFAULT_BRANCH = "main"
+GH_DEFAULT_PATH   = "output.txt"
+
+
+def _write_gh_config(token):
+    """Ghi file github_config.json với token (có thể rỗng)."""
+    cfg = {
+        "owner":  GH_DEFAULT_OWNER,
+        "repo":   GH_DEFAULT_REPO,
+        "branch": GH_DEFAULT_BRANCH,
+        "path":   GH_DEFAULT_PATH,
+        "token":  (token or "").strip(),
+    }
+    try:
+        with open(GH_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        log_info(f"✓ Đã ghi {GH_CONFIG_FILE}")
+        return True
+    except Exception as e:
+        log_error(f"Ghi github_config.json fail: {e}")
+        return False
+
+
+def _read_gh_config():
+    """Đọc file config, trả dict hoặc None."""
+    if not os.path.exists(GH_CONFIG_FILE):
+        return None
+    try:
+        with open(GH_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log_error(f"Đọc github_config.json fail: {e}")
+        return None
+
+
+def _prompt_github_token(root, current_token=""):
+    """
+    Hiện dialog hỏi token. Trả token hoặc None nếu bỏ qua.
+    """
+    result = {"token": None}
+
+    dlg = tk.Toplevel(root)
+    dlg.title("🔑 Cài đặt GitHub Token")
+    dlg.configure(bg="#1e1e2e")
+    dlg.resizable(False, False)
+    # KHÔNG dùng transient — tránh bị ẩn theo khi root withdraw
+
+    W, H = 620, 520
+    try:
+        root.update_idletasks()
+        x = (root.winfo_screenwidth() // 2) - (W // 2)
+        y = (root.winfo_screenheight() // 2) - (H // 2)
+        dlg.geometry(f"{W}x{H}+{x}+{y}")
+    except Exception:
+        dlg.geometry(f"{W}x{H}")
+
+    # ── Header ──
+    header = tk.Frame(dlg, bg="#282a3a", height=56)
+    header.pack(fill="x"); header.pack_propagate(False)
+    tk.Label(header, text="🔑  CÀI ĐẶT GITHUB TOKEN",
+             bg="#282a3a", fg="#cba6f7",
+             font=("Segoe UI", 13, "bold")).pack(side="left",
+                                                  padx=18, pady=14)
+
+    # ── Body ──
+    body = tk.Frame(dlg, bg="#1e1e2e")
+    body.pack(fill="both", expand=True, padx=24, pady=16)
+
+    tk.Label(body,
+             text="Để đồng bộ dữ liệu lên GitHub, bạn cần 1 token cá nhân.",
+             bg="#1e1e2e", fg="#cdd6f4",
+             font=("Segoe UI", 10), anchor="w",
+             justify="left").pack(fill="x", pady=(0, 12))
+
+    tk.Label(body, text="📋 Cách tạo token (làm 1 lần):",
+             bg="#1e1e2e", fg="#89b4fa",
+             font=("Segoe UI", 10, "bold"),
+             anchor="w").pack(fill="x", pady=(4, 6))
+
+    steps = [
+        "1. Mở link:  github.com/settings/tokens?type=beta",
+        "2. Bấm 'Generate new token'",
+        "3. Repository access → Only select repositories",
+        "   → chọn  ManagementSystem",
+        "4. Permissions → Contents: Read and write",
+        "5. Generate token → Copy chuỗi  github_pat_...",
+    ]
+    for s in steps:
+        tk.Label(body, text=s,
+                 bg="#1e1e2e", fg="#7f849c",
+                 font=("Consolas", 8),
+                 anchor="w").pack(fill="x")
+
+    tk.Frame(body, bg="#313244", height=1).pack(fill="x", pady=(14, 14))
+
+    tk.Label(body, text="Dán token vào đây:",
+             bg="#1e1e2e", fg="#cdd6f4",
+             font=("Segoe UI", 10, "bold"),
+             anchor="w").pack(fill="x", pady=(0, 6))
+
+    token_var = tk.StringVar(value=current_token)
+    entry = tk.Entry(body, textvariable=token_var,
+                     bg="#313244", fg="#cdd6f4",
+                     insertbackground="#cdd6f4",
+                     relief="flat", font=("Consolas", 10),
+                     show="●")
+    entry.pack(fill="x", ipady=8)
+    entry.focus_set()
+    try:
+        entry.selection_range(0, "end")
+    except Exception:
+        pass
+
+    show_var = tk.BooleanVar(value=False)
+    def toggle_show():
+        entry.config(show="" if show_var.get() else "●")
+
+    tk.Checkbutton(body, text="👁  Hiện token",
+                   variable=show_var, command=toggle_show,
+                   bg="#1e1e2e", fg="#7f849c",
+                   selectcolor="#313244",
+                   activebackground="#1e1e2e",
+                   activeforeground="#cdd6f4",
+                   font=("Segoe UI", 9), bd=0,
+                   highlightthickness=0,
+                   cursor="hand2").pack(anchor="w", pady=(6, 0))
+
+    # ── Footer ──
+    footer = tk.Frame(dlg, bg="#282a3a", height=64)
+    footer.pack(fill="x", side="bottom")
+    footer.pack_propagate(False)
+
+    def on_save():
+        t = token_var.get().strip()
+        if not t:
+            messagebox.showwarning(
+                "Thiếu token",
+                "Vui lòng nhập token hoặc bấm 'Bỏ qua'.",
+                parent=dlg)
+            return
+        result["token"] = t
+        dlg.destroy()
+
+    def on_skip():
+        result["token"] = None
+        dlg.destroy()
+
+    tk.Button(footer, text="Bỏ qua",
+              command=on_skip,
+              bg="#313244", fg="#cdd6f4",
+              activebackground="#45475a",
+              activeforeground="#cdd6f4",
+              relief="flat", cursor="hand2",
+              font=("Segoe UI", 10, "bold"),
+              padx=24, pady=6, bd=0
+              ).pack(side="right", padx=(6, 18), pady=14)
+
+    tk.Button(footer, text="💾 Lưu",
+              command=on_save,
+              bg="#89b4fa", fg="#1e1e2e",
+              activebackground="#74c7ec",
+              activeforeground="#1e1e2e",
+              relief="flat", cursor="hand2",
+              font=("Segoe UI", 10, "bold"),
+              padx=24, pady=6, bd=0
+              ).pack(side="right", padx=6, pady=14)
+
+    entry.bind("<Return>", lambda e: on_save())
+    dlg.bind("<Escape>",   lambda e: on_skip())
+    dlg.protocol("WM_DELETE_WINDOW", on_skip)
+
+    try:
+        dlg.deiconify()              # đảm bảo dialog được vẽ
+        dlg.lift()
+        dlg.focus_force()            # kéo focus về dialog
+        dlg.attributes("-topmost", True)
+        dlg.after(500, lambda: dlg.attributes("-topmost", False))
+        dlg.grab_set()
+    except Exception as e:
+        log_warn(f"Dialog setup fail: {e}")
+
+    root.wait_window(dlg)
+    return result["token"]
 
 def _load_gh_config():
     """Ưu tiên ENV GITHUB_TOKEN, fallback file config."""
@@ -2266,6 +2454,12 @@ class UngDungQuanLy:
         # Undo
         self.undo_stack = UndoStack(self.settings["undo_stack_size"])
 
+        # ── Setup GitHub token lần đầu ──
+        if not os.path.exists(GH_CONFIG_FILE):
+            self.root.update()          # ← dùng update() thay vì update_idletasks()
+            token = _prompt_github_token(self.root)
+            _write_gh_config(token or "")
+
         # GitHub config
         GH_CONFIG = _load_gh_config()
         if GH_CONFIG:
@@ -2368,6 +2562,31 @@ class UngDungQuanLy:
         if hasattr(self, "o_tim_ma") and self.o_tim_ma:
             self.o_tim_ma.focus_set()
             self.o_tim_ma.selection_range(0, "end")
+
+    def doi_token_github(self):
+        """Mở dialog đổi token GitHub."""
+        global GH_CONFIG
+
+        current = ""
+        cfg = _read_gh_config()
+        if cfg:
+            current = cfg.get("token", "")
+
+        token = _prompt_github_token(self.root, current)
+        if token is None:
+            return
+
+        if _write_gh_config(token):
+            GH_CONFIG = _load_gh_config()
+            if hasattr(self, "gh_badge"):
+                if GH_CONFIG:
+                    self.gh_badge.config(text="☁ GitHub …",
+                                         fg=self.XANH_DUONG)
+                    self._async(self._health_check_gh)
+                else:
+                    self.gh_badge.config(text="⚠ Token trống",
+                                         fg=self.DO)
+            self.thong_bao("✓ Đã lưu token GitHub", self.XANH_LA)
 
     def mo_settings_inline(self):
         """Panel settings nổi giữa cửa sổ chính (không tạo Toplevel)."""
@@ -2910,6 +3129,47 @@ class UngDungQuanLy:
             ("sort_desc", "Hướng sắp xếp", sort_dir, ""),
         ])
 
+        # ── GitHub info ──
+        _gh_info = _read_gh_config() or {}
+        _gh_has_token = bool(_gh_info.get("token"))
+        _gh_token_status = "✓ Đã có" if _gh_has_token else "✗ Chưa có"
+        _gh_token_color  = self.XANH_LA if _gh_has_token else self.DO
+
+        tk.Label(inner_cfg, text="☁  GitHub", bg=self.NEN, fg=self.TIM,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(12, 4))
+
+        gh_box = tk.Frame(inner_cfg, bg=self.NEN2)
+        gh_box.pack(fill="x", pady=(0, 6))
+
+        for lbl, val, color in [
+            ("Owner",  _gh_info.get("owner",  "(chưa có)"), self.CHU),
+            ("Repo",   _gh_info.get("repo",   "(chưa có)"), self.CHU),
+            ("Branch", _gh_info.get("branch", "main"),      self.CHU),
+            ("Path",   _gh_info.get("path",   "output.txt"),self.CHU),
+            ("Token",  _gh_token_status,                    _gh_token_color),
+        ]:
+            row = tk.Frame(gh_box, bg=self.NEN2, padx=12, pady=6)
+            row.pack(fill="x")
+            tk.Label(row, text=lbl, bg=self.NEN2, fg=self.CHU_MO,
+                     font=("Segoe UI", 9), anchor="w", width=10
+                     ).pack(side="left")
+            tk.Label(row, text=str(val), bg=self.NEN2, fg=color,
+                     font=("Consolas", 9), anchor="w"
+                     ).pack(side="left", fill="x", expand=True)
+
+        tk.Button(gh_box, text="🔑  Đổi token GitHub",
+                  command=lambda: (close_settings(),
+                                   self.root.after(150,
+                                                   self.doi_token_github)),
+                  bg=self.NEN3, fg=self.CHU,
+                  activebackground=self.XANH_DUONG,
+                  activeforeground="#1e1e2e",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 9, "bold"),
+                  padx=15, pady=6, bd=0
+                  ).pack(pady=(4, 12))
+
         # Đường dẫn file
         tk.Label(inner_cfg, text="📁  Đường dẫn file", bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
@@ -3247,6 +3507,9 @@ class UngDungQuanLy:
                       self.XANH_LA, "#94e2d5").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
                       self.XANH_DUONG, self.XANH_DUONG_H
+                      ).pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "🔑  Token GitHub", self.doi_token_github,
+                      self.NEN3, self.NEN3
                       ).pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📜  Lịch sử thay đổi", self.mo_lich_su,
                 self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
