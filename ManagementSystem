@@ -2677,9 +2677,6 @@ class UngDungQuanLy:
         # Auto-save loop
         self._schedule_auto_save()
 
-        # Auto-save loop
-        self._schedule_auto_save()
-
         self.root.protocol("WM_DELETE_WINDOW", self.khi_dong)
         self.o_ma.focus_set()
 
@@ -2919,6 +2916,7 @@ class UngDungQuanLy:
             dlg.focus_force()
             dlg.attributes("-topmost", True)
             dlg.after(400, lambda: dlg.attributes("-topmost", False))
+            dlg.grab_set()               # ← THÊM DÒNG NÀY
         except Exception:
             pass
 
