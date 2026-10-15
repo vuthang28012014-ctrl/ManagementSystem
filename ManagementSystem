@@ -2101,6 +2101,34 @@ def fetch_remote_script(timeout=20):
         log_warn(f"Fetch update fail: {e}")
         return None
 
+def _fix_double_newlines(text):
+    """
+    Gộp dòng trống xen kẽ sinh ra do copy từ Word / web chat / markdown render.
+    Chỉ gọi khi đã xác định file bị lỗi (ratio dòng trống > 35%).
+    
+    Logic: nếu dòng hiện tại KHÔNG trống, dòng ngay sau TRỐNG, 
+    và dòng sau nữa KHÔNG trống → bỏ dòng trống đó.
+    Dòng trống giữa các block (2+ dòng trống liên tiếp) sẽ được giữ.
+    """
+    lines = text.split("\n")
+    result = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        result.append(lines[i])
+        if (i + 2 < n
+                and lines[i].strip() != ""
+                and lines[i + 1].strip() == ""
+                and lines[i + 2].strip() != ""):
+            i += 2   # bỏ dòng trống xen kẽ
+        else:
+            i += 1
+    cleaned = "\n".join(result)
+    # Gộp 3+ dòng trống liên tiếp thành 2 (chuẩn PEP8)
+    import re as _re
+    cleaned = _re.sub(r"\n{4,}", "\n\n\n", cleaned)
+    return cleaned
+
 def doc_file(HocSinh, filename=DATA_FILE):
     """Load data — ưu tiên GitHub, fallback local.
     Trả về (số_hs, warnings_list)."""
@@ -2897,6 +2925,21 @@ class UngDungQuanLy:
     def _apply_update(self, remote_content, dlg):
         """Ghi file mới + backup file cũ."""
         script_path = _get_self_path()
+        # ── Tự động phát hiện + fix file bị double-newline ──
+        lines_check = remote_content.split("\n")
+        if len(lines_check) > 100:
+            n_empty = sum(1 for L in lines_check if not L.strip())
+            ratio = n_empty / len(lines_check)
+            # File bình thường: ~12-18% dòng trống
+            # File lỗi (double-newline): > 40%
+            if ratio > 0.35:
+                log_warn(f"Phát hiện file remote bị double-newline "
+                         f"({ratio*100:.0f}% dòng trống) — tự động làm sạch")
+                remote_content = _fix_double_newlines(remote_content)
+                lines_check2 = remote_content.split("\n")
+                n_empty2 = sum(1 for L in lines_check2 if not L.strip())
+                log_info(f"Sau khi làm sạch: {n_empty2/len(lines_check2)*100:.0f}% dòng trống "
+                         f"({len(lines_check)} → {len(lines_check2)} dòng)")
         if not script_path:
             # Cho phép người dùng chọn file .py thủ công
             ans = messagebox.askyesno(
