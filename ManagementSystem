@@ -43,6 +43,8 @@ import time as _time
 import threading
 import traceback
 import random
+import hashlib
+import shutil
 from datetime import datetime, timezone
 from collections import deque
 from copy import deepcopy
@@ -87,6 +89,15 @@ SETTINGS_FILE  = os.path.join(SCRIPT_DIR, "settings.json")
 DATA_FILE      = os.path.join(SCRIPT_DIR, "output.txt")
 LOG_FILE       = os.path.join(SCRIPT_DIR, "app.log")
 
+# ═══════════════════════════════════════════════════════════════
+# AUTO UPDATE CONFIG
+# ═══════════════════════════════════════════════════════════════
+APP_VERSION   = "2.2"           # ← Tăng lên mỗi lần phát hành
+UPDATE_URL    = ("https://raw.githubusercontent.com/"
+                 "vuthang28012014-ctrl/ManagementSystem/"
+                 "refs/heads/main/ManagementSystem")
+UPDATE_CHECK_INTERVAL_S = 6 * 3600   # Cooldown 6 giờ
+
 THU = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
 COT_DIEMDANH = ["ten"] + THU
 COT_TEN = "ten"
@@ -107,6 +118,8 @@ DEFAULT_SETTINGS = {
     "enable_confetti":      True,
     "tong_tuan":            35,
     "tuan_hk1":             18,
+    "auto_check_update":    True,
+    "last_update_check":   0,
     "ly_do_goi_y":          ["Không phép", "Có phép", "Ốm", "Việc gia đình",
                               "Đi khám bệnh", "Đại hội", "Thi HSG"],
 }
@@ -1960,6 +1973,63 @@ def _svg_bar_chart_vertical(items, width=900, height=280,
     svg.append('</svg>')
     return "".join(svg)
 
+# ═══════════════════════════════════════════════════════════════
+# AUTO UPDATE HELPERS
+# ═══════════════════════════════════════════════════════════════
+def _get_self_path():
+    """Đường dẫn file script .py đang chạy. None nếu frozen .exe."""
+    if getattr(sys, "frozen", False):
+        return None
+    try:
+        return os.path.abspath(__file__)
+    except NameError:
+        return None
+
+
+def _get_self_hash():
+    """SHA256 của file script hiện tại. None nếu không đọc được."""
+    p = _get_self_path()
+    if not p or not os.path.exists(p):
+        return None
+    try:
+        with open(p, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception as e:
+        log_warn(f"Hash self fail: {e}")
+        return None
+
+
+def _hash_str(s):
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _parse_version(content):
+    """Tìm APP_VERSION trong content. Trả str hoặc '?'."""
+    import re
+    m = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+    return m.group(1) if m else "?"
+
+
+def fetch_remote_script(timeout=20):
+    """Tải script từ UPDATE_URL. Trả string hoặc None."""
+    if not URLLIB_OK:
+        return None
+    try:
+        req = urllib.request.Request(
+            UPDATE_URL,
+            headers={
+                "User-Agent": f"ManagementSystem/{APP_VERSION}",
+                "Cache-Control": "no-cache",
+            })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        log_warn(f"Fetch update HTTP {e.code}")
+        return None
+    except Exception as e:
+        log_warn(f"Fetch update fail: {e}")
+        return None
+
 def doc_file(HocSinh, filename=DATA_FILE):
     """Load data — ưu tiên GitHub, fallback local.
     Trả về (số_hs, warnings_list)."""
@@ -2501,6 +2571,13 @@ class UngDungQuanLy:
         if GH_CONFIG:
             self._async(self._health_check_gh)
 
+        # Auto-check update (async, sau 2s để UI ổn định)
+        if self.settings.get("auto_check_update", True):
+            self.root.after(2500, lambda: self.kiem_tra_cap_nhat(force=False))
+
+        # Auto-save loop
+        self._schedule_auto_save()
+
         # Auto-save loop
         self._schedule_auto_save()
 
@@ -2594,6 +2671,224 @@ class UngDungQuanLy:
                     self.gh_badge.config(text="⚠ Token trống",
                                          fg=self.DO)
             self.thong_bao("✓ Đã lưu token GitHub", self.XANH_LA)
+
+    # ═══════════════════════════════════════════════════════════
+    # AUTO UPDATE
+    # ═══════════════════════════════════════════════════════════
+    def kiem_tra_cap_nhat(self, force=False):
+        """Kiểm tra update. force=True → bỏ qua cooldown."""
+        if not force and not self.settings.get("auto_check_update", True):
+            return
+        if not force:
+            last = self.settings.get("last_update_check", 0)
+            if _time.time() - last < UPDATE_CHECK_INTERVAL_S:
+                return
+
+        self.thong_bao("🔃 Đang kiểm tra cập nhật...", self.XANH_DUONG)
+
+        def task():
+            return fetch_remote_script()
+
+        def on_done(remote):
+            self.settings["last_update_check"] = _time.time()
+            save_settings(self.settings)
+
+            if not remote:
+                if force:
+                    self.thong_bao("⚠ Không kết nối được server cập nhật",
+                                   self.VANG)
+                return
+
+            # So sánh hash file hiện tại với hash remote
+            cur_hash = _get_self_hash()
+            if cur_hash is None:
+                if force:
+                    self.thong_bao(
+                        "⚠ Không đọc được file script — chạy từ .exe?",
+                        self.VANG)
+                return
+
+            if _hash_str(remote) == cur_hash:
+                if force:
+                    self.thong_bao(
+                        f"✓ Đã là phiên bản mới nhất (v{APP_VERSION})",
+                        self.XANH_LA)
+                return
+
+            self._hien_dialog_cap_nhat(remote)
+
+        self._async(task, on_success=on_done)
+
+    def _hien_dialog_cap_nhat(self, remote_content):
+        """Dialog thông báo có bản cập nhật mới."""
+        remote_ver = _parse_version(remote_content)
+        remote_hash = _hash_str(remote_content)[:12]
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("🆕 Có bản cập nhật mới")
+        dlg.configure(bg=self.NEN)
+        dlg.resizable(False, False)
+
+        W, H = 640, 500
+        try:
+            self.root.update_idletasks()
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - W) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - H) // 2
+            dlg.geometry(f"{W}x{H}+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            dlg.geometry(f"{W}x{H}")
+
+        # Header
+        header = tk.Frame(dlg, bg=self.NEN2, height=56)
+        header.pack(fill="x"); header.pack_propagate(False)
+        tk.Label(header, text="🆕  CÓ BẢN CẬP NHẬT MỚI",
+                 bg=self.NEN2, fg=self.XANH_LA,
+                 font=("Segoe UI", 13, "bold")
+                 ).pack(side="left", padx=18, pady=14)
+
+        body = tk.Frame(dlg, bg=self.NEN)
+        body.pack(fill="both", expand=True, padx=20, pady=14)
+
+        tk.Label(body,
+                 text=f"Phiên bản hiện tại:  v{APP_VERSION}",
+                 bg=self.NEN, fg=self.CHU_MO,
+                 font=("Segoe UI", 10), anchor="w"
+                 ).pack(fill="x", pady=(0, 4))
+
+        tk.Label(body,
+                 text=f"Phiên bản mới:        v{remote_ver}  "
+                      f"(hash: {remote_hash})",
+                 bg=self.NEN, fg=self.XANH_LA,
+                 font=("Segoe UI", 11, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(0, 12))
+
+        # Preview
+        tk.Label(body, text="📄 Xem trước nội dung (60 dòng đầu):",
+                 bg=self.NEN, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(8, 4))
+
+        prev_frame = tk.Frame(body, bg=self.NEN2)
+        prev_frame.pack(fill="both", expand=True)
+        prev_txt = tk.Text(prev_frame, bg=self.NEN2, fg=self.CHU_MO,
+                            relief="flat", font=("Consolas", 8),
+                            wrap="none", padx=8, pady=6,
+                            height=15)
+        prev_sb = ttk.Scrollbar(prev_frame, orient="vertical",
+                                 command=prev_txt.yview)
+        prev_txt.configure(yscrollcommand=prev_sb.set)
+        prev_txt.pack(side="left", fill="both", expand=True)
+        prev_sb.pack(side="right", fill="y")
+
+        preview = "\n".join(remote_content.splitlines()[:60])
+        prev_txt.insert("1.0", preview)
+        prev_txt.config(state="disabled")
+
+        # Footer
+        footer = tk.Frame(dlg, bg=self.NEN2, height=64)
+        footer.pack(fill="x", side="bottom")
+        footer.pack_propagate(False)
+
+        def on_skip():
+            dlg.destroy()
+            self.thong_bao("Đã bỏ qua bản cập nhật", self.CHU_MO)
+
+        def on_update():
+            self._apply_update(remote_content, dlg)
+
+        tk.Button(footer, text="Để sau", command=on_skip,
+                  bg=self.NEN3, fg=self.CHU,
+                  activebackground="#45475a", activeforeground=self.CHU,
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=24, pady=6, bd=0
+                  ).pack(side="right", padx=(6, 18), pady=14)
+
+        tk.Button(footer, text="⬇  Cập nhật ngay", command=on_update,
+                  bg=self.XANH_LA, fg="#1e1e2e",
+                  activebackground="#94e2d5", activeforeground="#1e1e2e",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=24, pady=6, bd=0
+                  ).pack(side="right", padx=6, pady=14)
+
+        dlg.bind("<Escape>", lambda e: on_skip())
+        dlg.protocol("WM_DELETE_WINDOW", on_skip)
+
+        try:
+            dlg.lift()
+            dlg.focus_force()
+            dlg.attributes("-topmost", True)
+            dlg.after(400, lambda: dlg.attributes("-topmost", False))
+        except Exception:
+            pass
+
+    def _apply_update(self, remote_content, dlg):
+        """Ghi file mới + backup file cũ."""
+        script_path = _get_self_path()
+        if not script_path:
+            messagebox.showinfo(
+                "Không hỗ trợ tự cập nhật",
+                "Bạn đang chạy từ file .exe.\n\n"
+                "Vui lòng tải bản mới tại:\n"
+                "https://github.com/vuthang28012014-ctrl/ManagementSystem",
+                parent=dlg)
+            return
+
+        # 1. Backup file cũ
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak_path = f"{script_path}.bak.{ts}"
+        try:
+            shutil.copy2(script_path, bak_path)
+            log_info(f"✓ Backup script: {bak_path}")
+        except Exception as e:
+            log_error(f"Backup script fail: {e}")
+            messagebox.showerror(
+                "Lỗi backup",
+                f"Không thể sao lưu file cũ:\n{e}",
+                parent=dlg)
+            return
+
+        # 2. Ghi file mới (atomic qua tmp)
+        try:
+            tmp = script_path + ".new"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(remote_content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, script_path)
+            log_info(f"✓ Đã ghi script mới: {script_path}")
+        except Exception as e:
+            log_error(f"Apply update fail: {e}")
+            # Rollback nếu có thể
+            try:
+                shutil.copy2(bak_path, script_path)
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Lỗi cập nhật",
+                f"Không ghi được file mới — đã rollback:\n{e}",
+                parent=dlg)
+            return
+
+        # 3. Reset last check để lần sau check lại ngay
+        self.settings["last_update_check"] = 0
+        save_settings(self.settings)
+
+        dlg.destroy()
+
+        ans = messagebox.askyesno(
+            "Cập nhật thành công",
+            "✅ Đã cập nhật xong!\n\n"
+            f"Backup: {os.path.basename(bak_path)}\n\n"
+            "Cần KHỞI ĐỘNG LẠI để áp dụng.\n"
+            "Bạn có muốn đóng ứng dụng ngay bây giờ không?")
+        if ans:
+            self.khi_dong()
+        else:
+            self.thong_bao(
+                "✓ Đã cập nhật — hãy khởi động lại khi thuận tiện",
+                self.XANH_LA)
 
     def mo_settings_inline(self):
         """Panel settings nổi giữa cửa sổ chính (không tạo Toplevel)."""
@@ -3032,6 +3327,11 @@ class UngDungQuanLy:
                     "Bật/tắt âm thanh phản hồi khi lưu, đổi trạng thái, ... "
                     "(chưa hỗ trợ — dành cho tương lai).",
                     "enable_sound", self.CAM)
+
+        make_toggle(f_effects, "🔃  Tự kiểm tra cập nhật",
+                    "Tự động kiểm tra bản mới từ GitHub mỗi 6 giờ. "
+                    "Khi phát hiện sẽ hiện hộp thoại để bạn chọn.",
+                    "auto_check_update", self.XANH_DUONG)
 
         # ═══════════════════════════════════════════════════════
         # TAB 2 — CẤU HÌNH KHÁC (có scroll)
@@ -3527,7 +3827,10 @@ class UngDungQuanLy:
         self._tao_nut(form, "🖨  In báo cáo", self.xuat_bao_cao_html,
                       "#4527A0", "#5E35B1").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
-                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
+                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "🔃  Kiểm tra cập nhật",
+                      lambda: self.kiem_tra_cap_nhat(force=True),
+                      "#5E35B1", "#7E57C2").pack(fill="x", padx=20, pady=(0, 20))
 
     def _tao_cot_giua(self, parent):
         giua = tk.Frame(parent, bg=self.NEN)
