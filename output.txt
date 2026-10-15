@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "updated_at": "2026-10-15T14:22:45.223496+00:00"
+    "updated_at": "2026-10-15T14:25:12.949296+00:00"
   },
   "34": {
     "name": "Trịnh Đức Anh",
@@ -172,8 +172,8 @@
           "CN": ""
         },
         "errors": {
-          "T2": "",
-          "T3": "",
+          "T2": "Kéo dây giày của bạn",
+          "T3": "MTT giờ Toán",
           "T4": "",
           "T5": "",
           "T6": "",
@@ -192,13 +192,13 @@
           "CN": true
         },
         "reasons": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
         },
         "errors": {
           "T2": "Kéo dây giày của bạn",
@@ -1194,7 +1194,7 @@
           "CN": ""
         },
         "errors": {
-          "T2": "",
+          "T2": "MTT giờ Mĩ Thuật",
           "T3": "",
           "T4": "",
           "T5": "",
@@ -1214,13 +1214,13 @@
           "CN": true
         },
         "reasons": {
-          "T2": "",
-          "T3": "",
-          "T4": "",
-          "T5": "",
-          "T6": "",
-          "T7": "",
-          "CN": ""
+          "T2": "Không phép",
+          "T3": "Không phép",
+          "T4": "Không phép",
+          "T5": "Không phép",
+          "T6": "Không phép",
+          "T7": "Không phép",
+          "CN": "Không phép"
         },
         "errors": {
           "T2": "MTT giờ Mĩ Thuật",
@@ -2169,8 +2169,8 @@
       },
       "5": {
         "attendance": {
-          "T2": true,
-          "T3": true,
+          "T2": false,
+          "T3": false,
           "T4": true,
           "T5": true,
           "T6": true,
@@ -2178,8 +2178,8 @@
           "CN": true
         },
         "reasons": {
-          "T2": "Không phép",
-          "T3": "Không phép",
+          "T2": "Bị cúm A",
+          "T3": "Bị cúm A",
           "T4": "Không phép",
           "T5": "Không phép",
           "T6": "Không phép",
@@ -2198,8 +2198,8 @@
       },
       "6": {
         "attendance": {
-          "T2": false,
-          "T3": false,
+          "T2": true,
+          "T3": true,
           "T4": true,
           "T5": true,
           "T6": true,
@@ -3213,7 +3213,7 @@
           "T3": "",
           "T4": "",
           "T5": "",
-          "T6": "",
+          "T6": "MTT giờ GDCD",
           "T7": "",
           "CN": ""
         }
