@@ -61,6 +61,12 @@ try:
     from openpyxl.styles import (Font, PatternFill, Alignment,
                                   Border, Side)
     from openpyxl.utils import get_column_letter
+    from openpyxl.chart import (BarChart, LineChart, DoughnutChart,
+                                 Reference, Series)
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.marker import Marker
+    from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.drawing.line import LineProperties
     OPENPYXL_OK = True
 except ImportError:
     OPENPYXL_OK = False
@@ -417,6 +423,70 @@ def github_push(config, content, commit_msg=None):
             return False, str(e)
 
     return False, "Conflict sau 3 lần thử"
+
+def github_push_ex(config, content, commit_msg=None):
+    """
+    Giống github_push nhưng trả (ok, err, conflict).
+    conflict=True → caller nên pull lại và merge rồi thử lại.
+    """
+    if not URLLIB_OK or not config:
+        return False, "Không có config GitHub", False
+
+    if not commit_msg:
+        commit_msg = f"Cập nhật lúc {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    api_url = (f"https://api.github.com/repos/{config['owner']}/"
+               f"{config['repo']}/contents/{config['path']}")
+    headers = {
+        "Authorization": f"token {config['token']}",
+        "Accept":        "application/vnd.github.v3+json",
+        "User-Agent":    "ManagementSystem/2.0",
+    }
+
+    def get_sha():
+        try:
+            req = urllib.request.Request(
+                api_url + f"?ref={config['branch']}", headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("sha")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            log_error(f"GitHub lấy SHA HTTP {e.code}")
+            return None
+        except Exception as e:
+            log_error(f"GitHub lấy SHA: {e}")
+            return None
+
+    sha = get_sha()
+    body = {
+        "message": commit_msg,
+        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "branch":  config["branch"],
+    }
+    if sha:
+        body["sha"] = sha
+
+    try:
+        req = urllib.request.Request(
+            api_url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={**headers, "Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            if resp.status in (200, 201):
+                return True, None, False
+    except urllib.error.HTTPError as e:
+        if e.code in (409, 422):
+            return False, f"Conflict HTTP {e.code}", True
+        if e.code == 403:
+            return False, "403 – token hết hạn hoặc rate limit", False
+        return False, f"HTTP {e.code}", False
+    except Exception as e:
+        return False, str(e), False
+
+    return False, "unknown", False
 
 # ═══════════════════════════════════════════════════════════════
 # GITHUB HISTORY API
@@ -796,6 +866,302 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
             for i, wd in enumerate(widths, 1):
                 ws.column_dimensions[get_column_letter(i)].width = wd
             ws.freeze_panes = ws.cell(row=hdr_row + 1, column=1)
+        # ══════════════════════════════════════════════════
+        # SHEET "_data_charts" (ẨN) — chứa dữ liệu tham chiếu
+        # ══════════════════════════════════════════════════
+        ws_data = wb.create_sheet("_data_charts")
+
+        # ── TÍNH DATA ──
+        week_rates = []
+        for tuan in range(1, TONG_TUAN + 1):
+            t_cm = t_vp = t_vkp = 0
+            for ma in hs_order:
+                w = hoc_sinh[ma].get("weeks", {}).get(tuan) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                for day in THU:
+                    if att.get(day, False):
+                        t_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md:
+                            t_vp += 1
+                        else:
+                            t_vkp += 1
+            tt = t_cm + t_vp + t_vkp
+            week_rates.append((t_cm / tt * 100) if tt else 0)
+
+        all_cm = all_vp = all_vkp = 0
+        for ma in hs_order:
+            d = hoc_sinh[ma]
+            for t in range(1, TONG_TUAN + 1):
+                w = d.get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                for day in THU:
+                    if att.get(day, False):
+                        all_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md:
+                            all_vp += 1
+                        else:
+                            all_vkp += 1
+
+        class_stats = {}
+        for ma in hs_order:
+            d = hoc_sinh[ma]
+            cls = d.get("class", "") or "(Không lớp)"
+            arr = class_stats.setdefault(cls, [0, 0, 0])
+            for t in range(1, TONG_TUAN + 1):
+                w = d.get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                for day in THU:
+                    if att.get(day, False):
+                        arr[0] += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md:
+                            arr[1] += 1
+                        else:
+                            arr[2] += 1
+        class_items = []
+        for cls, (p, e, a) in class_stats.items():
+            tt = p + e + a
+            rate = (p / tt * 100) if tt else 0
+            class_items.append((cls, rate))
+        class_items.sort(key=lambda x: -x[1])
+
+        # ── GHI DATA VÀO SHEET ẨN ──
+        # Cột A, B: theo tuần
+        ws_data["A1"] = "Tuần"
+        ws_data["B1"] = "Tỉ lệ (%)"
+        for i, rate in enumerate(week_rates, 1):
+            ws_data.cell(row=1 + i, column=1, value=f"T{i}")
+            ws_data.cell(row=1 + i, column=2, value=round(rate, 2))
+
+        # Cột D, E: tổng quan
+        ws_data["D1"] = "Loại"
+        ws_data["E1"] = "Số buổi"
+        for i, (label, val) in enumerate([
+            ("Có mặt", all_cm),
+            ("Vắng phép", all_vp),
+            ("Vắng KP", all_vkp),
+        ], 1):
+            ws_data.cell(row=1 + i, column=4, value=label)
+            ws_data.cell(row=1 + i, column=5, value=val)
+
+        # Cột G, H: theo lớp
+        ws_data["G1"] = "Lớp"
+        ws_data["H1"] = "Tỉ lệ (%)"
+        for i, (cls, rate) in enumerate(class_items, 1):
+            ws_data.cell(row=1 + i, column=7, value=cls)
+            ws_data.cell(row=1 + i, column=8, value=round(rate, 2))
+        # Cột J: mốc 90% (dùng cho reference line)
+        ws_data["J1"] = "Mốc 90%"
+        for i in range(1, TONG_TUAN + 1):
+            ws_data.cell(row=1 + i, column=10, value=90)
+        # Cột L: Tỉ lệ HS có lỗi theo tuần
+        ws_data["L1"] = "Tỉ lệ HS có lỗi (%)"
+        n_hs_total = len(hs_order) if hs_order else 1
+        for tuan in range(1, TONG_TUAN + 1):
+            n_err_hs = 0
+            for ma in hs_order:
+                w = hoc_sinh[ma].get("weeks", {}).get(tuan) or {}
+                err = w.get("errors", {})
+                if any((err.get(day, "") or "").strip() for day in THU):
+                    n_err_hs += 1
+            rate_err = n_err_hs / n_hs_total * 100
+            ws_data.cell(row=1 + tuan, column=12,
+                         value=round(rate_err, 2))
+
+        # Ẩn sheet này đi
+        ws_data.sheet_state = "hidden"
+
+        # ══════════════════════════════════════════════════
+        # SHEET "Biểu đồ" — CHỈ chứa chart, không bảng số
+        # ══════════════════════════════════════════════════
+        ws_chart = wb.create_sheet("Biểu đồ")
+
+        ws_chart["A1"] = "BIỂU ĐỒ CHUYÊN CẦN CẢ NĂM"
+        ws_chart["A1"].font = Font(bold=True, size=16, color="1F3864")
+        ws_chart["A1"].alignment = Alignment(horizontal="center")
+        ws_chart.merge_cells("A1:P1")
+        ws_chart.row_dimensions[1].height = 30
+
+        # ═══ LINE CHART — 1 đường smooth, không marker rối ═══
+        line = LineChart()
+        line.title = "Tỉ lệ có mặt theo tuần"
+        line.y_axis.title = "Tỉ lệ (%)"
+        line.y_axis.scaling.min = 0
+        line.y_axis.scaling.max = 100
+        line.y_axis.majorTickMark = "out"
+        line.y_axis.minorTickMark = "none"
+        line.y_axis.majorGridlines = None    # tắt grid mặc định (xấu)
+        line.x_axis.title = "Tuần"
+        line.x_axis.majorTickMark = "out"
+        line.x_axis.minorTickMark = "none"
+        line.height = 10
+        line.width = 22
+
+        line_data = Reference(
+            ws_data,
+            min_col=2, max_col=2,
+            min_row=1, max_row=1 + TONG_TUAN)
+        line_cats = Reference(
+            ws_data,
+            min_col=1, max_col=1,
+            min_row=2, max_row=1 + TONG_TUAN)
+
+        s_line = Series(line_data, title_from_data=True)
+
+        # ── Style đường ──
+        try:
+            s_line.graphicalProperties = GraphicalProperties()
+            s_line.graphicalProperties.line = LineProperties(
+                solidFill="1E66F5",       # xanh dương đậm
+                w=28000)                  # độ dày ~2.8pt
+            s_line.smooth = True          # đường cong mượt
+            s_line.marker = Marker(symbol="none")  # TẮT marker
+        except Exception as e:
+            log_warn(f"Line style fail: {e}")
+
+        line.series.append(s_line)
+        line.set_categories(line_cats)
+
+        # ── Đường mốc 90% (reference line) ──
+        # Thêm 1 series phụ, tất cả điểm = 90%
+        try:
+            ref_data_rows = []
+            for i in range(1, TONG_TUAN + 1):
+                ws_data.cell(row=1 + i, column=10, value=90)   # cột J
+            ref_data = Reference(
+                ws_data,
+                min_col=10, max_col=10,
+                min_row=1, max_row=1 + TONG_TUAN)
+            s_ref = Series(ref_data, title="Mốc 90%")
+            s_ref.graphicalProperties = GraphicalProperties()
+            s_ref.graphicalProperties.line = LineProperties(
+                solidFill="EF4444", w=12000, prstDash="dash")
+            s_ref.marker = Marker(symbol="none")
+            s_ref.smooth = False
+            line.series.append(s_ref)
+        except Exception as e:
+            log_warn(f"Ref line fail: {e}")
+
+        ws_chart.add_chart(line, "A3")
+
+        # ═══ DOUGHNUT — chỉ hiện % ═══
+        donut = DoughnutChart()
+        donut.title = "Tổng quan chuyên cần"
+        donut.height = 9
+        donut.width = 12
+        donut.holeSize = 60
+
+        d_data = Reference(
+            ws_data,
+            min_col=5, max_col=5,
+            min_row=1, max_row=4)
+        d_cats = Reference(
+            ws_data,
+            min_col=4, max_col=4,
+            min_row=2, max_row=4)
+
+        s_donut = Series(d_data, title_from_data=True)
+        donut.series.append(s_donut)
+        donut.set_categories(d_cats)
+
+        donut.dataLabels = DataLabelList()
+        donut.dataLabels.showVal        = False
+        donut.dataLabels.showPercent    = True
+        donut.dataLabels.showSerName    = False
+        donut.dataLabels.showCatName    = False
+        donut.dataLabels.showLegendKey  = False
+        donut.dataLabels.showBubbleSize = False
+
+        ws_chart.add_chart(donut, "A25")
+
+        # ═══ BAR CHART — chỉ hiện value ═══
+        bar = BarChart()
+        bar.type = "col"
+        bar.title = "Chuyên cần theo lớp"
+        bar.y_axis.title = "Tỉ lệ (%)"
+        bar.y_axis.scaling.min = 0
+        bar.y_axis.scaling.max = 100
+        bar.x_axis.title = "Lớp"
+        bar.height = 10
+        bar.width = 16
+        bar.gapWidth = 40
+
+        b_data = Reference(
+            ws_data,
+            min_col=8, max_col=8,
+            min_row=1, max_row=1 + len(class_items))
+        b_cats = Reference(
+            ws_data,
+            min_col=7, max_col=7,
+            min_row=2, max_row=1 + len(class_items))
+
+        s_bar = Series(b_data, title_from_data=True)
+        bar.series.append(s_bar)
+        bar.set_categories(b_cats)
+
+        bar.dataLabels = DataLabelList()
+        bar.dataLabels.showVal        = True
+        bar.dataLabels.showPercent    = False
+        bar.dataLabels.showSerName    = False
+        bar.dataLabels.showCatName    = False
+        bar.dataLabels.showLegendKey  = False
+
+        ws_chart.add_chart(bar, "A47")
+        # ═══ BAR CHART — Tỉ lệ HS có lỗi theo tuần ═══
+        err_chart = BarChart()
+        err_chart.type = "col"
+        err_chart.title = "Tỉ lệ HS có lỗi theo tuần"
+        err_chart.y_axis.title = "Tỉ lệ (%)"
+        err_chart.y_axis.scaling.min = 0
+        err_chart.y_axis.scaling.max = 100
+        err_chart.x_axis.title = "Tuần"
+        err_chart.height = 10
+        err_chart.width = 22
+        err_chart.gapWidth = 20
+        err_chart.legend = None   # ẩn legend — chỉ 1 series
+
+        err_data = Reference(
+            ws_data,
+            min_col=12, max_col=12,
+            min_row=1, max_row=1 + TONG_TUAN)
+        err_cats = Reference(
+            ws_data,
+            min_col=1, max_col=1,
+            min_row=2, max_row=1 + TONG_TUAN)
+
+        s_err = Series(err_data, title_from_data=True)
+
+        # Style cột cam
+        try:
+            s_err.graphicalProperties = GraphicalProperties()
+            s_err.graphicalProperties.solidFill = "F97316"
+        except Exception as e:
+            log_warn(f"Err bar style fail: {e}")
+
+        err_chart.series.append(s_err)
+        err_chart.set_categories(err_cats)
+
+        ws_chart.add_chart(err_chart, "A69")
+
+        # Cột rộng để chart không bị chèn
+        for col_letter in ("A", "B", "C", "D", "E", "F", "G", "H",
+                           "I", "J", "K", "L", "M", "N", "O", "P"):
+            ws_chart.column_dimensions[col_letter].width = 12
+
+        # ═══ SẮP XẾP SHEET ═══
+        # Thứ tự mong muốn: Tổng hợp | Biểu đồ | Tuần 1..N | _data_charts
+        # 1. Đưa "Biểu đồ" lên ngay sau "Tổng hợp"
+        wb.move_sheet("Biểu đồ", offset=-(len(wb.sheetnames) - 2))
+        # 2. Đưa "_data_charts" xuống cuối
+        wb.move_sheet("_data_charts", offset=1000)
 
         wb.save(path)
         log_info(f"✓ Xuất Excel all: {path} ({TONG_TUAN} tuần)")
@@ -803,6 +1169,601 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
     except Exception as e:
         log_error(f"Xuất xlsx-all fail: {e}\n{traceback.format_exc()}")
         return False
+
+def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None):
+    """
+    Xuất báo cáo HTML. Nếu tuan=None → cả năm. Chạy trong thread.
+    Trả True nếu OK.
+    """
+    try:
+        def esc(s):
+            return (str(s).replace("&", "&amp;")
+                           .replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+
+        hs_order = sorted(hoc_sinh.keys(),
+                          key=lambda m: hoc_sinh[m]["name"].lower())
+
+        # ── Tính toán ──
+        def tinh(hs_d, tuan_filter=None):
+            n_cm = n_vp = n_vkp = n_loi = 0
+            weeks = range(1, TONG_TUAN + 1) if tuan_filter is None else [tuan_filter]
+            for t in weeks:
+                w = hs_d.get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                err = w.get("errors", {})
+                for day in THU:
+                    if att.get(day, False):
+                        n_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md:
+                            n_vp += 1
+                        else:
+                            n_vkp += 1
+                    if (err.get(day, "") or "").strip():
+                        n_loi += 1
+            total = n_cm + n_vp + n_vkp
+            rate = (n_cm / total * 100) if total else 0
+            return n_cm, n_vp, n_vkp, n_loi, rate
+
+        title = (f"BÁO CÁO CHUYÊN CẦN — TUẦN {tuan}"
+                 if tuan else "BÁO CÁO CHUYÊN CẦN CẢ NĂM")
+
+        parts = []
+        parts.append('<!DOCTYPE html><html lang="vi"><head>')
+        parts.append('<meta charset="UTF-8">')
+        parts.append(f'<title>{esc(title)}</title>')
+        parts.append('<style>')
+        parts.append('''
+            body { font-family: 'Segoe UI', Calibri, Arial, sans-serif;
+                   margin: 20px; color: #1a1a1a; background: #f8f9fb; }
+            .container { max-width: 1100px; margin: 0 auto;
+                         background: white; padding: 30px 40px;
+                         border-radius: 12px;
+                         box-shadow: 0 2px 16px rgba(0,0,0,0.08); }
+            h1 { color: #1F3864; margin: 0 0 8px 0; font-size: 24px; }
+            .meta { color: #666; font-style: italic; margin-bottom: 24px;
+                    font-size: 14px; }
+            table { border-collapse: collapse; width: 100%;
+                    margin: 16px 0; font-size: 13px; }
+            th { background: #4472C4; color: white;
+                 padding: 8px 10px; text-align: center;
+                 font-weight: 600; border: 1px solid #345a9e; }
+            td { padding: 7px 10px; border: 1px solid #d8dee9;
+                 text-align: center; }
+            td.name { text-align: left; font-weight: 500; }
+            tr:nth-child(even) td { background: #f5f7fa; }
+            .rate-good { background: #C6EFCE !important;
+                         color: #1a5c1a; font-weight: 600; }
+            .rate-ok   { background: #FFEB9C !important;
+                         color: #7a5a00; font-weight: 600; }
+            .rate-bad  { background: #FFC7CE !important;
+                         color: #8b1a2a; font-weight: 600; }
+            .ky-cm  { background: #C6EFCE; }
+            .ky-vp  { background: #FFEB9C; }
+            .ky-vkp { background: #FFC7CE; }
+            .ky-err { background: #FFD4A3; }
+            .footer { margin-top: 30px; text-align: center;
+                      color: #888; font-size: 12px; }
+            .summary-box { display: flex; gap: 16px; margin: 20px 0; }
+            .summary-item { flex: 1; background: #f0f4fa;
+                            padding: 14px; border-radius: 8px;
+                            border-left: 4px solid #4472C4; }
+            .summary-item .label { font-size: 12px; color: #666;
+                                   text-transform: uppercase; }
+            .summary-item .value { font-size: 22px; font-weight: 700;
+                                   color: #1F3864; margin-top: 4px; }
+            @media print {
+                body { background: white; margin: 0; }
+                .container { box-shadow: none; max-width: none; }
+                .no-print { display: none; }
+            }
+        ''')
+        parts.append('</style></head><body>')
+        parts.append('<div class="container">')
+
+        # Nút in
+        parts.append('<div class="no-print" '
+                     'style="text-align:right;margin-bottom:12px">')
+        parts.append('<button onclick="window.print()" '
+                     'style="padding:8px 20px;background:#4472C4;'
+                     'color:white;border:none;border-radius:6px;'
+                     'cursor:pointer;font-size:14px;font-weight:600">'
+                     '🖨 In báo cáo (Ctrl+P)</button>')
+        parts.append('</div>')
+
+        parts.append(f'<h1>{esc(title)}</h1>')
+        parts.append(f'<div class="meta">Ngày xuất: '
+                     f'{datetime.now().strftime("%d/%m/%Y %H:%M")} '
+                     f'· {len(hoc_sinh)} học sinh '
+                     f'· {TONG_TUAN} tuần</div>')
+
+        # ── Tổng quan ──
+        all_cm = all_vp = all_vkp = all_loi = 0
+        rows = []
+        for ma in hs_order:
+            d = hoc_sinh[ma]
+            n_cm, n_vp, n_vkp, n_loi, rate = tinh(d, tuan)
+            rows.append({
+                "ma": ma, "name": d["name"], "class": d["class"],
+                "to": d.get("to", "") or "—",
+                "cm": n_cm, "vp": n_vp, "vkp": n_vkp,
+                "loi": n_loi, "rate": rate,
+            })
+            all_cm += n_cm; all_vp += n_vp
+            all_vkp += n_vkp; all_loi += n_loi
+
+        total_all = all_cm + all_vp + all_vkp
+        rate_all = (all_cm / total_all * 100) if total_all else 0
+
+        parts.append('<div class="summary-box">')
+        for label, value in [
+            ("Tổng buổi",     f"{total_all:,}".replace(",", ".")),
+            ("Có mặt",        f"{all_cm:,}".replace(",", ".")),
+            ("Vắng phép",     f"{all_vp:,}".replace(",", ".")),
+            ("Vắng KP",       f"{all_vkp:,}".replace(",", ".")),
+            ("Tỉ lệ chung",   f"{rate_all:.1f}%"),
+        ]:
+            parts.append(
+                f'<div class="summary-item">'
+                f'<div class="label">{esc(label)}</div>'
+                f'<div class="value">{esc(value)}</div></div>')
+        parts.append('</div>')   # đóng summary-box
+
+        # ═════════════════════════════════════════════════════
+        # BIỂU ĐỒ SVG — Donut + Line + Bar
+        # ═════════════════════════════════════════════════════
+        parts.append('<h2 style="color:#1F3864;margin:32px 0 16px 0;'
+                     'padding-bottom:8px;border-bottom:2px solid #4472C4">'
+                     '📊 Biểu đồ phân tích</h2>')
+
+        total_all = all_cm + all_vp + all_vkp
+        rate_all_c = (all_cm / total_all * 100) if total_all else 0
+
+        # ── Donut + Legend ──
+        segments = [
+            (all_cm,  "#22C55E"),
+            (all_vp,  "#EAB308"),
+            (all_vkp, "#EF4444"),
+        ]
+        donut_svg = _svg_donut(
+            cx=130, cy=130, r=95, thickness=42,
+            segments=segments,
+            center_text=f"{rate_all_c:.0f}%",
+            center_sub="có mặt")
+
+        parts.append('<div style="display:flex;gap:30px;'
+                     'flex-wrap:wrap;align-items:center;'
+                     'justify-content:center;margin:16px 0 32px 0">')
+        parts.append(f'<div>{donut_svg}</div>')
+
+        # Legend
+        parts.append('<div style="flex:1;min-width:280px;max-width:400px">')
+        for label, value, color in [
+            ("✓ Có mặt",       all_cm,  "#22C55E"),
+            ("✗ Vắng phép",    all_vp,  "#EAB308"),
+            ("⊘ Không phép",   all_vkp, "#EF4444"),
+        ]:
+            pct = (value / total_all * 100) if total_all else 0
+            parts.append(
+                f'<div style="display:flex;align-items:center;'
+                f'padding:12px 16px;background:#f8fafc;'
+                f'border-radius:8px;margin-bottom:10px;'
+                f'border-left:5px solid {color}">'
+                f'<div style="flex:1;font-weight:600;font-size:14px">'
+                f'{label}</div>'
+                f'<div style="font-family:Consolas,monospace;'
+                f'color:#666;margin-right:20px;font-size:13px">'
+                f'{value:,} buổi</div>'.replace(",", ".") +
+                f'<div style="font-weight:700;color:{color};'
+                f'font-size:18px;min-width:70px;text-align:right">'
+                f'{pct:.1f}%</div>'
+                f'</div>')
+        parts.append('</div>')
+        parts.append('</div>')
+
+        # ── Line chart theo tuần ──
+        week_pts = []
+        for tuan_i in range(1, TONG_TUAN + 1):
+            t_cm = t_vp = t_vkp = 0
+            for ma_i in hs_order:
+                w_i = hoc_sinh[ma_i].get("weeks", {}).get(tuan_i) or {}
+                att_i = w_i.get("attendance", {})
+                rea_i = w_i.get("reasons", {})
+                for day_i in THU:
+                    if att_i.get(day_i, False):
+                        t_cm += 1
+                    else:
+                        r_i = (rea_i.get(day_i, "") or "").strip()
+                        if r_i and r_i != ly_do_md:
+                            t_vp += 1
+                        else:
+                            t_vkp += 1
+            tt_i = t_cm + t_vp + t_vkp
+            rate_i = (t_cm / tt_i * 100) if tt_i else 0
+            week_pts.append((f"T{tuan_i}", rate_i))
+
+        line_svg = _svg_line_chart(week_pts, width=900, height=280)
+
+        parts.append('<h3 style="color:#1F3864;margin:24px 0 12px 0">'
+                     '📈 Tỉ lệ có mặt theo tuần</h3>')
+        parts.append(f'<div style="overflow-x:auto;'
+                     f'background:#fff;padding:12px;'
+                     f'border-radius:8px;border:1px solid #e5e7eb">'
+                     f'{line_svg}</div>')
+
+        # ── Bar chart theo lớp ──
+        class_stats_html = {}
+        for ma_i in hs_order:
+            d_i = hoc_sinh[ma_i]
+            cls_i = d_i.get("class", "") or "(Không lớp)"
+            arr_i = class_stats_html.setdefault(cls_i, [0, 0, 0])
+            for t_i in range(1, TONG_TUAN + 1):
+                w_i = d_i.get("weeks", {}).get(t_i) or {}
+                att_i = w_i.get("attendance", {})
+                rea_i = w_i.get("reasons", {})
+                for day_i in THU:
+                    if att_i.get(day_i, False):
+                        arr_i[0] += 1
+                    else:
+                        r_i = (rea_i.get(day_i, "") or "").strip()
+                        if r_i and r_i != ly_do_md:
+                            arr_i[1] += 1
+                        else:
+                            arr_i[2] += 1
+
+        class_bars = []
+        for cls_i, (p_i, e_i, a_i) in class_stats_html.items():
+            tt_i = p_i + e_i + a_i
+            rate_i = (p_i / tt_i * 100) if tt_i else 0
+            if rate_i >= 90:   c_i = "#22C55E"
+            elif rate_i >= 75: c_i = "#EAB308"
+            else:              c_i = "#EF4444"
+            class_bars.append((cls_i, rate_i, c_i))
+        class_bars.sort(key=lambda x: -x[1])
+
+        bar_svg = _svg_bar_chart(class_bars, width=900, row_h=32)
+
+        parts.append('<h3 style="color:#1F3864;margin:24px 0 12px 0">'
+                     '📊 Chuyên cần theo lớp</h3>')
+        parts.append(f'<div style="overflow-x:auto;'
+                     f'background:#fff;padding:12px;'
+                     f'border-radius:8px;border:1px solid #e5e7eb">'
+                     f'{bar_svg}</div>')
+
+        # ── Bar chart tỉ lệ HS có lỗi theo tuần ──
+        n_hs_total_html = len(hs_order) if hs_order else 1
+        err_pts = []
+        for tuan_i in range(1, TONG_TUAN + 1):
+            n_err_hs = 0
+            for ma_i in hs_order:
+                w_i = hoc_sinh[ma_i].get("weeks", {}).get(tuan_i) or {}
+                err_i = w_i.get("errors", {})
+                if any((err_i.get(day_i, "") or "").strip()
+                       for day_i in THU):
+                    n_err_hs += 1
+            rate_i = n_err_hs / n_hs_total_html * 100
+            err_pts.append((f"T{tuan_i}", rate_i))
+
+        err_svg = _svg_bar_chart_vertical(
+            err_pts, width=900, height=280,
+            color="#F97316", show_labels_mod=5)
+
+        parts.append('<h3 style="color:#1F3864;margin:24px 0 12px 0">'
+                     '⚠ Tỉ lệ học sinh có lỗi theo tuần</h3>')
+        parts.append(f'<div style="overflow-x:auto;'
+                     f'background:#fff;padding:12px;'
+                     f'border-radius:8px;border:1px solid #e5e7eb">'
+                     f'{err_svg}</div>')
+
+        parts.append('<div style="height:32px"></div>')
+
+        # ── Bảng chi tiết ──
+        rows.sort(key=lambda r: r["rate"])
+        parts.append('<table>')
+        parts.append('<tr>'
+                     '<th>STT</th><th>Mã</th><th>Họ tên</th>'
+                     '<th>Lớp</th><th>Tổ</th>'
+                     '<th>Có mặt</th><th>Vắng phép</th>'
+                     '<th>Vắng KP</th><th>Lỗi</th><th>Tỉ lệ</th>'
+                     '</tr>')
+        for stt, r in enumerate(rows, 1):
+            if r["rate"] >= 90:
+                cls_rate = "rate-good"
+            elif r["rate"] >= 75:
+                cls_rate = "rate-ok"
+            else:
+                cls_rate = "rate-bad"
+            parts.append('<tr>')
+            parts.append(f'<td>{stt}</td>')
+            parts.append(f'<td>{esc(r["ma"])}</td>')
+            parts.append(f'<td class="name">{esc(r["name"])}</td>')
+            parts.append(f'<td>{esc(r["class"])}</td>')
+            parts.append(f'<td>{esc(r["to"])}</td>')
+            parts.append(f'<td>{r["cm"]}</td>')
+            parts.append(f'<td>{r["vp"]}</td>')
+            parts.append(f'<td>{r["vkp"]}</td>')
+            parts.append(f'<td>{r["loi"]}</td>')
+            parts.append(f'<td class="{cls_rate}">{r["rate"]:.1f}%</td>')
+            parts.append('</tr>')
+        parts.append('</table>')
+
+        parts.append('<div class="footer">'
+                     'Hệ Thống Quản Lý Học Sinh v2.1 — '
+                     'in bằng Ctrl+P hoặc nút phía trên</div>')
+        parts.append('</div></body></html>')
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("".join(parts))
+        log_info(f"✓ Xuất HTML: {path}")
+        return True
+    except Exception as e:
+        log_error(f"Xuất HTML fail: {e}\n{traceback.format_exc()}")
+        return False
+
+def _diff_for_warning(local_data, merged_data):
+    """
+    So sánh local (trước save) với merged (sau merge với remote).
+    Chỉ trả về những gì REMOTE đã thay đổi mà local không có.
+    """
+    result = {
+        "new_hs":         [],
+        "deleted_hs":     [],
+        "att_changes":    0,
+        "reason_changes": 0,
+        "error_changes":  0,
+    }
+    local_ids  = set(local_data.keys())
+    merged_ids = set(merged_data.keys())
+
+    # HS có trong merged (remote thêm) mà local không có
+    for sid in merged_ids - local_ids:
+        result["new_hs"].append(
+            merged_data[sid].get("name", f"Mã {sid}"))
+
+    # HS local có mà merged không (hiếm khi xảy ra với union)
+    for sid in local_ids - merged_ids:
+        result["deleted_hs"].append(
+            local_data[sid].get("name", f"Mã {sid}"))
+
+    # Chi tiết cho HS chung
+    for sid in local_ids & merged_ids:
+        lw = local_data[sid].get("weeks", {})
+        mw = merged_data[sid].get("weeks", {})
+        for t in set(lw.keys()) | set(mw.keys()):
+            l_t = lw.get(t) or {}
+            m_t = mw.get(t) or {}
+            if l_t == m_t:
+                continue
+            la = l_t.get("attendance", {}); ma = m_t.get("attendance", {})
+            lr = l_t.get("reasons",    {}); mr = m_t.get("reasons",    {})
+            le = l_t.get("errors",     {}); me = m_t.get("errors",     {})
+            for day in THU:
+                if bool(la.get(day, False)) != bool(ma.get(day, False)):
+                    result["att_changes"] += 1
+                if (lr.get(day, "") or "").strip() != (mr.get(day, "") or "").strip():
+                    result["reason_changes"] += 1
+                if (le.get(day, "") or "").strip() != (me.get(day, "") or "").strip():
+                    result["error_changes"] += 1
+    return result
+
+# ═══════════════════════════════════════════════════════════════
+# SVG CHART HELPERS (dùng cho HTML report)
+# ═══════════════════════════════════════════════════════════════
+def _svg_donut(cx, cy, r, thickness, segments,
+               center_text="", center_sub=""):
+    """Donut chart SVG. segments = [(value, color), ...]."""
+    total = sum(v for v, _ in segments)
+    if total <= 0:
+        return ""
+
+    circ_parts = []
+    cum = 0.0
+    for value, color in segments:
+        pct = value / total * 100
+        circ_parts.append(
+            f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" '
+            f'stroke="{color}" stroke-width="{thickness}" '
+            f'pathLength="100" '
+            f'stroke-dasharray="{pct:.4f} 100" '
+            f'stroke-dashoffset="{-cum:.4f}" '
+            f'transform="rotate(-90 {cx} {cy})"/>'
+        )
+        cum += pct
+
+    size = cx * 2
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" '
+           f'width="{size}" height="{size}" '
+           f'viewBox="0 0 {size} {size}" '
+           f'style="display:block">']
+    svg.extend(circ_parts)
+    if center_text:
+        svg.append(
+            f'<text x="{cx}" y="{cy}" text-anchor="middle" '
+            f'font-size="26" font-weight="700" fill="#1F3864" '
+            f'dominant-baseline="middle">{center_text}</text>')
+    if center_sub:
+        svg.append(
+            f'<text x="{cx}" y="{cy+26}" text-anchor="middle" '
+            f'font-size="11" fill="#888">{center_sub}</text>')
+    svg.append('</svg>')
+    return "".join(svg)
+
+
+def _svg_line_chart(points, width=900, height=280):
+    """Line chart SVG. points = [(label, value_0_to_100), ...]."""
+    if not points:
+        return ""
+
+    pl, pt, pr, pb = 50, 20, 30, 40
+    plot_w = width - pl - pr
+    plot_h = height - pt - pb
+
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" '
+           f'width="{width}" height="{height}" '
+           f'viewBox="0 0 {width} {height}" '
+           f'style="display:block;max-width:100%;height:auto">']
+
+    # Plot area
+    svg.append(f'<rect x="{pl}" y="{pt}" width="{plot_w}" height="{plot_h}" '
+               f'fill="#FAFBFC" stroke="#E5E7EB" rx="4"/>')
+
+    # Grid
+    for pct in (0, 25, 50, 75, 100):
+        y = pt + plot_h * (1 - pct / 100)
+        svg.append(f'<line x1="{pl}" y1="{y:.1f}" '
+                   f'x2="{pl+plot_w}" y2="{y:.1f}" '
+                   f'stroke="#E5E7EB" stroke-width="1"/>')
+        svg.append(f'<text x="{pl-6}" y="{y+4:.1f}" text-anchor="end" '
+                   f'font-size="10" fill="#888">{pct}%</text>')
+
+    n = len(points)
+    coords = []
+    for i, (_, v) in enumerate(points):
+        x = pl + plot_w * i / (n - 1) if n > 1 else pl + plot_w / 2
+        y = pt + plot_h * (1 - min(100, max(0, v)) / 100)
+        coords.append((x, y))
+
+    # Area under
+    if n > 1:
+        area_path = f'M {coords[0][0]:.1f},{pt+plot_h:.1f} '
+        for x, y in coords:
+            area_path += f'L {x:.1f},{y:.1f} '
+        area_path += f'L {coords[-1][0]:.1f},{pt+plot_h:.1f} Z'
+        svg.append(f'<path d="{area_path}" fill="#89B4FA" '
+                   f'fill-opacity="0.25"/>')
+
+        line_path = 'M ' + ' L '.join(
+            f'{x:.1f},{y:.1f}' for x, y in coords)
+        svg.append(f'<path d="{line_path}" fill="none" '
+                   f'stroke="#1E66F5" stroke-width="2.5" '
+                   f'stroke-linejoin="round" stroke-linecap="round"/>')
+
+    # Points + x labels
+    for i, (x, y) in enumerate(coords):
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" '
+                   f'fill="white" stroke="#1E66F5" stroke-width="2"/>')
+        if n <= 20 or i % 5 == 0 or i == n - 1:
+            svg.append(f'<text x="{x:.1f}" y="{pt+plot_h+16}" '
+                       f'text-anchor="middle" font-size="9" fill="#666">'
+                       f'{points[i][0]}</text>')
+
+    svg.append('</svg>')
+    return "".join(svg)
+
+
+def _svg_bar_chart(items, width=900, row_h=30):
+    """Horizontal bar chart SVG. items = [(label, rate, color), ...]."""
+    if not items:
+        return ""
+
+    label_w = 110
+    value_w = 90
+    bar_max = max(200, width - label_w - value_w)
+    height = 20 + len(items) * row_h + 20
+
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" '
+           f'width="{width}" height="{height}" '
+           f'viewBox="0 0 {width} {height}" '
+           f'style="display:block;max-width:100%;height:auto">']
+
+    # Grid lines
+    for pct in (0, 25, 50, 75, 100):
+        x = label_w + bar_max * pct / 100
+        svg.append(f'<line x1="{x:.1f}" y1="10" '
+                   f'x2="{x:.1f}" y2="{height-20}" '
+                   f'stroke="#E5E7EB" stroke-width="1"/>')
+        svg.append(f'<text x="{x:.1f}" y="{height-8}" '
+                   f'text-anchor="middle" font-size="9" fill="#888">'
+                   f'{pct}%</text>')
+
+    for i, (label, rate, color) in enumerate(items):
+        y = 20 + i * row_h
+        # Label
+        svg.append(f'<text x="{label_w-8}" y="{y+row_h/2+4:.1f}" '
+                   f'text-anchor="end" font-size="11" fill="#1a1a1a" '
+                   f'font-weight="600">{label}</text>')
+        # Track
+        svg.append(f'<rect x="{label_w}" y="{y+6:.1f}" '
+                   f'width="{bar_max}" height="{row_h-12:.1f}" '
+                   f'fill="#F0F4FA" rx="3"/>')
+        # Bar
+        bw = bar_max * min(100, max(0, rate)) / 100
+        if bw > 0:
+            svg.append(f'<rect x="{label_w}" y="{y+6:.1f}" '
+                       f'width="{bw:.1f}" height="{row_h-12:.1f}" '
+                       f'fill="{color}" rx="3"/>')
+        # Value
+        svg.append(f'<text x="{label_w+bar_max+10:.1f}" '
+                   f'y="{y+row_h/2+4:.1f}" '
+                   f'font-size="12" fill="{color}" font-weight="700">'
+                   f'{rate:.1f}%</text>')
+
+    svg.append('</svg>')
+    return "".join(svg)
+
+def _svg_bar_chart_vertical(items, width=900, height=280,
+                             color="#F97316", show_labels_mod=5):
+    """Vertical bar chart. items = [(label, value_0_to_100), ...]."""
+    if not items:
+        return ""
+
+    pl, pt, pr, pb = 50, 20, 30, 50
+    plot_w = width - pl - pr
+    plot_h = height - pt - pb
+    n = len(items)
+
+    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" '
+           f'width="{width}" height="{height}" '
+           f'viewBox="0 0 {width} {height}" '
+           f'style="display:block;max-width:100%;height:auto">']
+
+    # Plot area
+    svg.append(f'<rect x="{pl}" y="{pt}" width="{plot_w}" '
+               f'height="{plot_h}" fill="#FAFBFC" '
+               f'stroke="#E5E7EB" rx="4"/>')
+
+    # Grid ngang
+    for pct in (0, 25, 50, 75, 100):
+        y = pt + plot_h * (1 - pct / 100)
+        svg.append(f'<line x1="{pl}" y1="{y:.1f}" '
+                   f'x2="{pl+plot_w}" y2="{y:.1f}" '
+                   f'stroke="#E5E7EB" stroke-width="1"/>')
+        svg.append(f'<text x="{pl-6}" y="{y+4:.1f}" '
+                   f'text-anchor="end" font-size="10" '
+                   f'fill="#888">{pct}%</text>')
+
+    gap = plot_w / n
+    bar_w = gap * 0.7
+
+    for i, (label, value) in enumerate(items):
+        x = pl + gap * i + gap * 0.15
+        h = plot_h * min(100, max(0, value)) / 100
+        y = pt + plot_h - h
+
+        # Bar (không vẽ nếu value = 0)
+        if h > 0:
+            svg.append(f'<rect x="{x:.1f}" y="{y:.1f}" '
+                       f'width="{bar_w:.1f}" height="{h:.1f}" '
+                       f'fill="{color}" rx="2"/>')
+
+        # X label — chỉ hiện 1 số tuần để không rối
+        if i % show_labels_mod == 0 or i == n - 1:
+            svg.append(f'<text x="{x + bar_w/2:.1f}" '
+                       f'y="{pt+plot_h+16}" text-anchor="middle" '
+                       f'font-size="9" fill="#666">{label}</text>')
+
+        # Value trên đầu cột (chỉ khi cột đủ cao và ít điểm)
+        if value > 0 and n <= 20:
+            svg.append(f'<text x="{x + bar_w/2:.1f}" y="{y-4:.1f}" '
+                       f'text-anchor="middle" font-size="9" '
+                       f'fill="{color}" font-weight="600">'
+                       f'{value:.1f}%</text>')
+
+    svg.append('</svg>')
+    return "".join(svg)
 
 def doc_file(HocSinh, filename=DATA_FILE):
     """Load data — ưu tiên GitHub, fallback local.
@@ -1126,10 +2087,8 @@ def merge_data(local_data, remote_data):
 
 def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
     """
-    Pull remote → merge với local → ghi local → push.
-    Trả (ok_local, ok_gh, err, merged_dict_or_None).
-
-    merged_dict: chỉ khác None nếu có merge xảy ra (để UI refresh).
+    Pull → merge → push. Nếu push conflict → pull lại + merge lại + push.
+    Retry tối đa 3 lần. Trả (ok_local, ok_gh, err, merged_dict_or_None).
     """
     # Auto-fill lý do
     for sid, d in HocSinh.items():
@@ -1140,66 +2099,81 @@ def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
                 if not att.get(day, False) and not rea.get(day, "").strip():
                     rea[day] = ly_do_mac_dinh
 
+    local_data = {int(k): v for k, v in HocSinh.items()}
     merged_dict = None
-
-    # ─────── BƯỚC 1: PULL REMOTE ───────
-    if GH_CONFIG:
-        log_info("Đang pull data mới nhất từ GitHub...")
-        remote_raw = github_fetch(GH_CONFIG)
-        if remote_raw:
-            try:
-                parsed_raw = json.loads(
-                    remote_raw,
-                    object_pairs_hook=_object_pairs_hook_clean,
-                )
-                remote_data = _normalize_remote(parsed_raw)
-                local_data  = {int(k): v for k, v in HocSinh.items()}
-                merged_dict = merge_data(local_data, remote_data)
-                log_info(f"✓ Merge OK — {len(merged_dict)} HS "
-                         f"(local {len(local_data)} / remote {len(remote_data)})")
-            except Exception as e:
-                log_error(f"Merge fail: {e} — push local only")
-                merged_dict = None
-        else:
-            log_warn("Không fetch được remote — push local only")
-
-    # ─────── BƯỚC 2: ĐÓNG GÓI ───────
-    source = merged_dict if merged_dict is not None else HocSinh
-    payload = {
-        "_meta": {"updated_at": datetime.now(timezone.utc).isoformat()},
-    }
-    for k, v in source.items():
-        payload[str(k)] = v
-    content = json.dumps(payload, indent=2, ensure_ascii=False)
-
-    # Backup
-    _backup_file(filename, keep=backup_count)
-
-    # Ghi local atomic
+    content = None
     ok_local = False
-    try:
-        tmp = filename + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, filename)
-        ok_local = True
-        log_info("✓ Ghi local OK")
-    except Exception as e:
-        log_error(f"Ghi local lỗi: {e}")
+    last_err = None
 
-    # ─────── BƯỚC 3: PUSH ───────
-    if GH_CONFIG:
-        log_info("Đang push GitHub...")
-        ok_gh, err = github_push(GH_CONFIG, content)
-        if ok_gh:
-            log_info("✓ Push GitHub thành công")
+    MAX_RETRY = 3
+    for attempt in range(MAX_RETRY):
+        # ── PULL + MERGE ──
+        if GH_CONFIG:
+            log_info(f"Pull lần {attempt+1}...")
+            remote_raw = github_fetch(GH_CONFIG)
+            if remote_raw:
+                try:
+                    parsed_raw = json.loads(
+                        remote_raw,
+                        object_pairs_hook=_object_pairs_hook_clean,
+                    )
+                    remote_data = _normalize_remote(parsed_raw)
+                    merged_dict = merge_data(local_data, remote_data)
+                    log_info(f"✓ Merge OK — {len(merged_dict)} HS "
+                             f"(local {len(local_data)} / remote {len(remote_data)})")
+                except Exception as e:
+                    log_error(f"Merge fail: {e} — dùng local only")
+                    merged_dict = None
+            else:
+                log_warn("Không fetch được remote — local only")
+                merged_dict = None
+
+        # ── ĐÓNG GÓI ──
+        source = merged_dict if merged_dict is not None else HocSinh
+        payload = {
+            "_meta": {"updated_at": datetime.now(timezone.utc).isoformat()},
+        }
+        for k, v in source.items():
+            payload[str(k)] = v
+        content = json.dumps(payload, indent=2, ensure_ascii=False)
+
+        # ── GHI LOCAL (chỉ lần đầu) ──
+        if not ok_local:
+            _backup_file(filename, keep=backup_count)
+            try:
+                tmp = filename + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, filename)
+                ok_local = True
+                log_info("✓ Ghi local OK")
+            except Exception as e:
+                log_error(f"Ghi local lỗi: {e}")
+
+        # ── PUSH ──
+        if GH_CONFIG:
+            ok_gh, err, conflict = github_push_ex(GH_CONFIG, content)
+            if ok_gh:
+                log_info(f"✓ Push GitHub OK (lần {attempt+1})")
+                return ok_local, True, None, merged_dict
+
+            last_err = err
+            if conflict and attempt < MAX_RETRY - 1:
+                log_warn(f"⚠ Conflict — pull lại + merge lại "
+                         f"({attempt+1}/{MAX_RETRY})")
+                _time.sleep(1.2)
+                # reset merged để pull lại
+                merged_dict = None
+                continue
+            else:
+                log_error(f"✗ Push GitHub fail: {err}")
+                return ok_local, False, err, merged_dict
         else:
-            log_error(f"✗ Push GitHub fail: {err}")
-        return ok_local, ok_gh, err, merged_dict
+            return ok_local, False, "no config", merged_dict
 
-    return ok_local, False, "no config", merged_dict
+    return ok_local, False, last_err or "Conflict sau nhiều lần", merged_dict
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2278,10 +3252,10 @@ class UngDungQuanLy:
                 self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "📊  Xuất Excel", self.xuat_excel,
-                      "#2E7D32", "#43A047").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📚  Xuất cả năm", self.xuat_excel_all,
                       "#1B5E20", "#2E7D32").pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "🖨  In báo cáo", self.xuat_bao_cao_html,
+                      "#4527A0", "#5E35B1").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
                       self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
 
@@ -2909,6 +3883,18 @@ class UngDungQuanLy:
         local_snapshot = deepcopy(self.HocSinh)
         ly_do_md = self.settings["ly_do_mac_dinh"]
 
+        # Snapshot tham chiếu SAU auto-fill (giống ghi_file sẽ làm)
+        # để so sánh chính xác, tránh false positive
+        local_ref = deepcopy(local_snapshot)
+        for sid_r, d_r in local_ref.items():
+            for t_r, w_r in d_r.get("weeks", {}).items():
+                att_r = w_r.get("attendance", {})
+                rea_r = w_r.setdefault("reasons", {})
+                for day_r in THU:
+                    if (not att_r.get(day_r, False)
+                            and not rea_r.get(day_r, "").strip()):
+                        rea_r[day_r] = ly_do_md
+
         def task():
             return ghi_file(local_snapshot, ly_do_md, DATA_FILE,
                             backup_count=self.settings["backup_count"])
@@ -2916,6 +3902,46 @@ class UngDungQuanLy:
         def on_done(res):
             ok_local, ok_gh, err, merged = res
             self._saving = False
+
+            # ── So sánh để cảnh báo máy khác đã sửa ──
+            if merged is not None:
+                try:
+                    local_int = {int(k): v for k, v in local_ref.items()}
+                    warn = _diff_for_warning(local_int, merged)
+                    total = (len(warn["new_hs"])
+                             + warn["att_changes"]
+                             + warn["reason_changes"]
+                             + warn["error_changes"])
+                    if total > 0:
+                        lines = ["🔄 Phát hiện thay đổi từ máy khác "
+                                 "— đã tự động merge:\n"]
+                        if warn["new_hs"]:
+                            names = warn["new_hs"][:10]
+                            lines.append(
+                                f"➕ {len(warn['new_hs'])} HS mới:")
+                            for n in names:
+                                lines.append(f"   • {n}")
+                            if len(warn["new_hs"]) > 10:
+                                lines.append(
+                                    f"   ... và {len(warn['new_hs'])-10} HS khác")
+                        if warn["deleted_hs"]:
+                            lines.append(
+                                f"➖ {len(warn['deleted_hs'])} HS bị xóa")
+                        if warn["att_changes"]:
+                            lines.append(
+                                f"✓ {warn['att_changes']} ô điểm danh thay đổi")
+                        if warn["reason_changes"]:
+                            lines.append(
+                                f"✏ {warn['reason_changes']} lý do thay đổi")
+                        if warn["error_changes"]:
+                            lines.append(
+                                f"⚠ {warn['error_changes']} lỗi thay đổi")
+                        lines.append("\nDữ liệu đã được cập nhật "
+                                     "— kiểm tra lại nếu cần.")
+                        self.root.after(200, lambda: messagebox.showinfo(
+                            "Đã merge với máy khác", "\n".join(lines)))
+                except Exception as e:
+                    log_warn(f"Diff warning fail: {e}")
             self._progress_running = False
             self._progress_pos     = 0
             if self._tw_job:
@@ -3814,6 +4840,53 @@ class UngDungQuanLy:
             else:
                 self.thong_bao(
                     "✗ Lỗi xuất — xem app.log", self.DO)
+
+        def on_err(e):
+            self._stop_progress()
+            self.thong_bao(f"✗ Lỗi: {e}", self.DO)
+
+        self._async(task, on_success=on_done, on_error=on_err)
+
+    def xuat_bao_cao_html(self):
+        """Xuất báo cáo HTML (cả năm) — mở bằng trình duyệt, Ctrl+P để in."""
+        if not self.HocSinh:
+            self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
+            initialfile="bao_cao_chuyen_can.html")
+        if not path: return
+
+        hs_snapshot = deepcopy(self.HocSinh)
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+
+        self._start_progress()
+        self.thong_bao("⏳ Đang xuất báo cáo HTML...", self.XANH_DUONG)
+
+        def task():
+            return _build_html_report(hs_snapshot, path, ly_do_md)
+
+        def on_done(ok):
+            self._stop_progress()
+            if ok:
+                self.thong_bao(
+                    f"✓ Đã xuất báo cáo: {os.path.basename(path)}",
+                    self.XANH_LA)
+                # Mở bằng trình duyệt
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(path)
+                    elif sys.platform == "darwin":
+                        import subprocess
+                        subprocess.Popen(["open", path])
+                    else:
+                        import subprocess
+                        subprocess.Popen(["xdg-open", path])
+                except Exception as e:
+                    log_warn(f"Không mở được HTML: {e}")
+            else:
+                self.thong_bao("✗ Lỗi xuất HTML — xem app.log", self.DO)
 
         def on_err(e):
             self._stop_progress()
