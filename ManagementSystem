@@ -588,6 +588,221 @@ def _backup_file(path, keep=5):
     except Exception as e:
         log_warn(f"Backup thất bại: {e}")
 
+def _build_xlsx_all(hoc_sinh, path, ly_do_md):
+    """
+    Xuất toàn bộ các tuần vào 1 file .xlsx (openpyxl).
+    Sheet 1: Tổng hợp — Sheet 2..N: mỗi tuần 1 sheet.
+    Trả True nếu OK. Chạy trong thread — KHÔNG chạm Tk.
+    """
+    if not OPENPYXL_OK:
+        return False
+    try:
+        wb = Workbook()
+        wb.remove(wb.active)   # xóa sheet mặc định
+
+        # ── Styles dùng chung ──
+        thin = Side(border_style="thin", color="999999")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        header_fill = PatternFill("solid", fgColor="4472C4")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        center = Alignment(horizontal="center", vertical="center")
+        left   = Alignment(horizontal="left",   vertical="center")
+        total_fill = PatternFill("solid", fgColor="D9E1F2")
+
+        fill_cm  = PatternFill("solid", fgColor="C6EFCE")
+        fill_vp  = PatternFill("solid", fgColor="FFEB9C")
+        fill_vkp = PatternFill("solid", fgColor="FFC7CE")
+        fill_err = PatternFill("solid", fgColor="FFD4A3")
+
+        # Danh sách HS sort theo tên
+        hs_order = sorted(hoc_sinh.keys(),
+                          key=lambda m: hoc_sinh[m]["name"].lower())
+
+        # ══════════════════════════════════════════════════
+        # SHEET 1 — TỔNG HỢP CẢ NĂM
+        # ══════════════════════════════════════════════════
+        ws_sum = wb.create_sheet("Tổng hợp")
+        sum_headers = ["STT", "Mã", "Họ tên", "Lớp", "Tổ",
+                       "Có mặt", "Vắng phép", "Vắng KP", "Lỗi", "Tỉ lệ"]
+        ncol = len(sum_headers)
+
+        ws_sum["A1"] = "BẢNG TỔNG HỢP CHUYÊN CẦN CẢ NĂM"
+        ws_sum["A1"].font = Font(bold=True, size=14, color="1F3864")
+        ws_sum["A1"].alignment = Alignment(horizontal="center")
+
+        ws_sum["A2"] = (f"Ngày xuất: "
+                        f"{datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                        f"  ·  Tổng số tuần: {TONG_TUAN}"
+                        f"  ·  {len(hoc_sinh)} học sinh")
+        ws_sum["A2"].font = Font(italic=True, color="666666")
+        ws_sum["A2"].alignment = Alignment(horizontal="center")
+
+        ws_sum.merge_cells(start_row=1, start_column=1,
+                           end_row=1, end_column=ncol)
+        ws_sum.merge_cells(start_row=2, start_column=1,
+                           end_row=2, end_column=ncol)
+
+        hdr_row = 4
+        for col, h in enumerate(sum_headers, 1):
+            c = ws_sum.cell(row=hdr_row, column=col, value=h)
+            c.fill = header_fill; c.font = header_font
+            c.alignment = center; c.border = border
+
+        tong_cm = tong_vp = tong_vkp = tong_loi = 0
+        row_i = hdr_row + 1
+        for stt, ma in enumerate(hs_order, 1):
+            d = hoc_sinh[ma]
+            n_cm = n_vp = n_vkp = n_loi = 0
+            for t in range(1, TONG_TUAN + 1):
+                w = d.get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                err = w.get("errors", {})
+                for day in THU:
+                    if att.get(day, False):
+                        n_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md:
+                            n_vp += 1
+                        else:
+                            n_vkp += 1
+                    if (err.get(day, "") or "").strip():
+                        n_loi += 1
+            total = n_cm + n_vp + n_vkp
+            rate = (n_cm / total * 100) if total else 0
+
+            vals = [stt, ma, d["name"], d["class"],
+                    d.get("to", "") or "—",
+                    n_cm, n_vp, n_vkp, n_loi, f"{rate:.1f}%"]
+            for col, val in enumerate(vals, 1):
+                c = ws_sum.cell(row=row_i, column=col, value=val)
+                c.border = border
+                c.alignment = left if col == 3 else center
+
+            # Tô màu cột tỉ lệ
+            if rate >= 90:   ws_sum.cell(row=row_i, column=10).fill = fill_cm
+            elif rate >= 75: ws_sum.cell(row=row_i, column=10).fill = fill_vp
+            else:            ws_sum.cell(row=row_i, column=10).fill = fill_vkp
+
+            tong_cm += n_cm; tong_vp += n_vp
+            tong_vkp += n_vkp; tong_loi += n_loi
+            row_i += 1
+
+        # Dòng tổng
+        row_i += 1
+        ws_sum.cell(row=row_i, column=2, value="TỔNG").font = Font(bold=True)
+        ws_sum.cell(row=row_i, column=3,
+                    value=f"{len(hoc_sinh)} HS").font = Font(bold=True)
+        for col, val in [(6, tong_cm), (7, tong_vp),
+                         (8, tong_vkp), (9, tong_loi)]:
+            c = ws_sum.cell(row=row_i, column=col, value=val)
+            c.font = Font(bold=True); c.alignment = center
+        for col in range(1, ncol + 1):
+            ws_sum.cell(row=row_i, column=col).fill = total_fill
+
+        for i, wd in enumerate([5, 8, 22, 8, 6, 10, 12, 10, 6, 10], 1):
+            ws_sum.column_dimensions[get_column_letter(i)].width = wd
+        ws_sum.freeze_panes = ws_sum.cell(row=hdr_row + 1, column=1)
+
+        # ══════════════════════════════════════════════════
+        # SHEETS 2..N — MỖI TUẦN 1 SHEET
+        # ══════════════════════════════════════════════════
+        week_headers = (["STT", "Mã", "Họ tên", "Lớp", "Tổ"]
+                        + THU
+                        + ["Có mặt", "Vắng phép", "Vắng KP", "Lỗi"])
+        wcol = len(week_headers)
+        first_ky_col = 6
+        last_ky_col  = 5 + len(THU)
+
+        for tuan in range(1, TONG_TUAN + 1):
+            ws = wb.create_sheet(f"Tuần {tuan}")
+
+            ws["A1"] = f"BẢNG ĐIỂM DANH — TUẦN {tuan}"
+            ws["A1"].font = Font(bold=True, size=14, color="1F3864")
+            ws["A1"].alignment = Alignment(horizontal="center")
+            ws.merge_cells(start_row=1, start_column=1,
+                           end_row=1, end_column=wcol)
+
+            ws["A2"] = f"Ngày xuất: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            ws["A2"].font = Font(italic=True, color="666666")
+            ws["A2"].alignment = Alignment(horizontal="center")
+            ws.merge_cells(start_row=2, start_column=1,
+                           end_row=2, end_column=wcol)
+
+            hdr_row = 4
+            for col, h in enumerate(week_headers, 1):
+                c = ws.cell(row=hdr_row, column=col, value=h)
+                c.fill = header_fill; c.font = header_font
+                c.alignment = center; c.border = border
+
+            tong_cm = tong_vp = tong_vkp = tong_loi = 0
+            row_i = hdr_row + 1
+            for stt, ma in enumerate(hs_order, 1):
+                d = hoc_sinh[ma]
+                w = d.get("weeks", {}).get(tuan) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                err = w.get("errors", {})
+
+                n_cm = n_vp = n_vkp = n_loi = 0
+                ky_list = []
+                for day in THU:
+                    if att.get(day, False):
+                        base = "✓"; n_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md:
+                            base = "✗"; n_vp += 1
+                        else:
+                            base = "⊘"; n_vkp += 1
+                    if (err.get(day, "") or "").strip():
+                        base += "!"; n_loi += 1
+                    ky_list.append(base)
+
+                vals = ([stt, ma, d["name"], d["class"],
+                         d.get("to", "") or "—"]
+                        + ky_list
+                        + [n_cm, n_vp, n_vkp, n_loi])
+                for col, val in enumerate(vals, 1):
+                    c = ws.cell(row=row_i, column=col, value=val)
+                    c.border = border
+                    c.alignment = left if col == 3 else center
+
+                    if first_ky_col <= col <= last_ky_col:
+                        ky = str(val)
+                        if ky.startswith("✓"):   c.fill = fill_cm
+                        elif ky.startswith("✗"): c.fill = fill_vp
+                        elif ky.startswith("⊘"): c.fill = fill_vkp
+                        elif ky.startswith("!"): c.fill = fill_err
+
+                tong_cm += n_cm; tong_vp += n_vp
+                tong_vkp += n_vkp; tong_loi += n_loi
+                row_i += 1
+
+            row_i += 1
+            ws.cell(row=row_i, column=2, value="TỔNG").font = Font(bold=True)
+            ws.cell(row=row_i, column=3,
+                    value=f"{len(hoc_sinh)} HS").font = Font(bold=True)
+            for col, val in enumerate(
+                    [tong_cm, tong_vp, tong_vkp, tong_loi],
+                    start=last_ky_col + 1):
+                c = ws.cell(row=row_i, column=col, value=val)
+                c.font = Font(bold=True); c.alignment = center
+            for col in range(1, wcol + 1):
+                ws.cell(row=row_i, column=col).fill = total_fill
+
+            widths = [5, 8, 22, 8, 6] + [4] * len(THU) + [8, 10, 10, 6]
+            for i, wd in enumerate(widths, 1):
+                ws.column_dimensions[get_column_letter(i)].width = wd
+            ws.freeze_panes = ws.cell(row=hdr_row + 1, column=1)
+
+        wb.save(path)
+        log_info(f"✓ Xuất Excel all: {path} ({TONG_TUAN} tuần)")
+        return True
+    except Exception as e:
+        log_error(f"Xuất xlsx-all fail: {e}\n{traceback.format_exc()}")
+        return False
 
 def doc_file(HocSinh, filename=DATA_FILE):
     """Load data — ưu tiên GitHub, fallback local.
@@ -2065,6 +2280,8 @@ class UngDungQuanLy:
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Xuất Excel", self.xuat_excel,
                       "#2E7D32", "#43A047").pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📚  Xuất cả năm", self.xuat_excel_all,
+                      "#1B5E20", "#2E7D32").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
                       self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
 
@@ -3558,6 +3775,51 @@ class UngDungQuanLy:
             self._xuat_xlsx()
         else:
             self._xuat_xls_html()
+
+    def xuat_excel_all(self):
+        """Xuất TOÀN BỘ các tuần vào 1 file Excel (mỗi tuần 1 sheet + Tổng hợp)."""
+        if not self.HocSinh:
+            self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
+
+        if not OPENPYXL_OK:
+            messagebox.showwarning(
+                "Cần openpyxl",
+                "Tính năng xuất nhiều sheet cần thư viện openpyxl.\n\n"
+                "Cài đặt: pip install openpyxl")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile="diem_danh_ca_nam.xlsx")
+        if not path: return
+
+        # Snapshot để thread đọc — tránh race condition
+        hs_snapshot = deepcopy(self.HocSinh)
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+
+        self._start_progress()
+        self.thong_bao(
+            f"⏳ Đang xuất {TONG_TUAN} tuần + Tổng hợp...", self.XANH_DUONG)
+
+        def task():
+            return _build_xlsx_all(hs_snapshot, path, ly_do_md)
+
+        def on_done(ok):
+            self._stop_progress()
+            if ok:
+                self.thong_bao(
+                    f"✓ Đã xuất cả năm: {os.path.basename(path)}",
+                    self.XANH_LA)
+            else:
+                self.thong_bao(
+                    "✗ Lỗi xuất — xem app.log", self.DO)
+
+        def on_err(e):
+            self._stop_progress()
+            self.thong_bao(f"✗ Lỗi: {e}", self.DO)
+
+        self._async(task, on_success=on_done, on_error=on_err)
 
     # ─────────────────────────────────────────────────────
     def _xuat_xlsx(self):
