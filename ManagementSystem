@@ -4042,10 +4042,6 @@ class UngDungQuanLy:
                   _wrap_close(lambda: self.kiem_tra_cap_nhat(force=True)),
                   "#5E35B1", "#7E57C2")
 
-        _tool_btn("📜  Lịch sử thay đổi",
-                  _wrap_close(self.mo_lich_su),
-                  self.TIM, "#b58dfa")
-
         # ═══════════════════════════════════════════════════════
         # TAB 3 — UPDATE LOG
         # ═══════════════════════════════════════════════════════
@@ -4340,6 +4336,8 @@ class UngDungQuanLy:
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
                       self.XANH_DUONG, self.XANH_DUONG_H
                       ).pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📜  Lịch sử thay đổi", self.mo_lich_su,
+                      self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📚  Xuất cả năm", self.xuat_excel_all,
