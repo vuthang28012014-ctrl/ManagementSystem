@@ -119,6 +119,7 @@ DEFAULT_SETTINGS = {
     "tong_tuan":            35,
     "tuan_hk1":             18,
     "auto_check_update":    True,
+    "export_format":        "excel",   # ← THÊM DÒNG NÀY
     "last_update_check":   0,
     "ly_do_goi_y":          ["Không phép", "Có phép", "Ốm", "Việc gia đình",
                               "Đi khám bệnh", "Đại hội", "Thi HSG"],
@@ -1378,7 +1379,7 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         log_error(f"Xuất xlsx-all fail: {e}\n{traceback.format_exc()}")
         return False
 
-def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None):
+def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
     """
     Xuất báo cáo HTML. Nếu tuan=None → cả năm. Chạy trong thread.
     Trả True nếu OK.
@@ -1420,9 +1421,23 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None):
                  if tuan else "BÁO CÁO CHUYÊN CẦN CẢ NĂM")
 
         parts = []
-        parts.append('<!DOCTYPE html><html lang="vi"><head>')
-        parts.append('<meta charset="UTF-8">')
-        parts.append(f'<title>{esc(title)}</title>')
+        if for_word:
+            parts.append(
+                '<html xmlns:o="urn:schemas-microsoft-com:office:office" '
+                'xmlns:w="urn:schemas-microsoft-com:office:word" '
+                'xmlns="http://www.w3.org/TR/REC-html40">')
+            parts.append('<head>')
+            parts.append('<meta charset="UTF-8">')
+            parts.append(f'<title>{esc(title)}</title>')
+            parts.append('<!--[if gte mso 9]><xml>')
+            parts.append('<w:WordDocument>')
+            parts.append('<w:View>Print</w:View>')
+            parts.append('<w:Zoom>100</w:Zoom>')
+            parts.append('</w:WordDocument></xml><![endif]-->')
+        else:
+            parts.append('<!DOCTYPE html><html lang="vi"><head>')
+            parts.append('<meta charset="UTF-8">')
+            parts.append(f'<title>{esc(title)}</title>')
         parts.append('<style>')
         parts.append('''
             body { font-family: 'Segoe UI', Calibri, Arial, sans-serif;
@@ -1709,6 +1724,303 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None):
         return True
     except Exception as e:
         log_error(f"Xuất HTML fail: {e}\n{traceback.format_exc()}")
+        return False
+
+def _build_word_report(hoc_sinh, path, ly_do_md):
+    """
+    Xuất báo cáo Word (.doc) — dùng HTML tables thay vì SVG.
+    Word KHÔNG render inline SVG đúng (text dồn về góc), nên biểu đồ
+    được vẽ bằng table với ô bgcolor.
+    """
+    try:
+        def esc(s):
+            return (str(s).replace("&", "&amp;")
+                           .replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+
+        hs_order = sorted(hoc_sinh.keys(),
+                          key=lambda m: hoc_sinh[m]["name"].lower())
+
+        def color_of(rate):
+            if rate >= 90:   return "#C6EFCE", "#1a5c1a"
+            elif rate >= 75: return "#FFEB9C", "#7a5a00"
+            else:            return "#FFC7CE", "#8b1a2a"
+
+        # ── Tính dữ liệu ──
+        rows = []
+        all_cm = all_vp = all_vkp = all_loi = 0
+        for ma in hs_order:
+            d = hoc_sinh[ma]
+            n_cm = n_vp = n_vkp = n_loi = 0
+            for t in range(1, TONG_TUAN + 1):
+                w = d.get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                err = w.get("errors", {})
+                for day in THU:
+                    if att.get(day, False):
+                        n_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md: n_vp += 1
+                        else: n_vkp += 1
+                    if (err.get(day, "") or "").strip():
+                        n_loi += 1
+            total = n_cm + n_vp + n_vkp
+            rate = (n_cm / total * 100) if total else 0
+            rows.append({
+                "ma": ma, "name": d["name"], "class": d["class"],
+                "to": d.get("to", "") or "—",
+                "cm": n_cm, "vp": n_vp, "vkp": n_vkp,
+                "loi": n_loi, "rate": rate,
+            })
+            all_cm += n_cm; all_vp += n_vp
+            all_vkp += n_vkp; all_loi += n_loi
+
+        total_all = all_cm + all_vp + all_vkp
+        rate_all = (all_cm / total_all * 100) if total_all else 0
+
+        # Theo tuần
+        week_data = []
+        for t in range(1, TONG_TUAN + 1):
+            t_cm = t_vp = t_vkp = 0
+            for ma in hs_order:
+                w = hoc_sinh[ma].get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                for day in THU:
+                    if att.get(day, False): t_cm += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md: t_vp += 1
+                        else: t_vkp += 1
+            tt = t_cm + t_vp + t_vkp
+            week_data.append((t, (t_cm / tt * 100) if tt else 0))
+
+        # Theo lớp
+        class_stats = {}
+        for ma in hs_order:
+            d = hoc_sinh[ma]
+            cls = d.get("class", "") or "(Không lớp)"
+            arr = class_stats.setdefault(cls, [0, 0, 0])
+            for t in range(1, TONG_TUAN + 1):
+                w = d.get("weeks", {}).get(t) or {}
+                att = w.get("attendance", {})
+                rea = w.get("reasons", {})
+                for day in THU:
+                    if att.get(day, False): arr[0] += 1
+                    else:
+                        r = (rea.get(day, "") or "").strip()
+                        if r and r != ly_do_md: arr[1] += 1
+                        else: arr[2] += 1
+        class_data = []
+        for cls, (p, e, a) in class_stats.items():
+            tt = p + e + a
+            class_data.append((cls, (p / tt * 100) if tt else 0, p, tt))
+        class_data.sort(key=lambda x: -x[1])
+
+        # Tỉ lệ HS có lỗi theo tuần
+        n_hs = len(hs_order) if hs_order else 1
+        err_data = []
+        for t in range(1, TONG_TUAN + 1):
+            n_err = 0
+            for ma in hs_order:
+                w = hoc_sinh[ma].get("weeks", {}).get(t) or {}
+                err = w.get("errors", {})
+                if any((err.get(d, "") or "").strip() for d in THU):
+                    n_err += 1
+            err_data.append((t, n_err / n_hs * 100))
+
+        # ── Build HTML ──
+        parts = []
+        parts.append(
+            '<html xmlns:o="urn:schemas-microsoft-com:office:office" '
+            'xmlns:w="urn:schemas-microsoft-com:office:word" '
+            'xmlns="http://www.w3.org/TR/REC-html40">')
+        parts.append('<head><meta charset="UTF-8">')
+        parts.append('<title>BÁO CÁO CHUYÊN CẦN CẢ NĂM</title>')
+        parts.append('<!--[if gte mso 9]><xml><w:WordDocument>'
+                     '<w:View>Print</w:View><w:Zoom>100</w:Zoom>'
+                     '</w:WordDocument></xml><![endif]-->')
+        parts.append('<style>')
+        parts.append('''
+            @page { size: A4 portrait; margin: 1.5cm 1.2cm; }
+            body { font-family: 'Times New Roman', Calibri, serif;
+                   font-size: 11pt; color: #1a1a1a; }
+            h1 { color: #1F3864; font-size: 18pt; text-align: center;
+                 margin: 0 0 6pt 0; }
+            h2 { color: #1F3864; font-size: 14pt; margin: 14pt 0 6pt 0;
+                 border-bottom: 1pt solid #4472C4; padding-bottom: 3pt; }
+            .meta { color: #666; font-style: italic; font-size: 10pt;
+                    text-align: center; margin-bottom: 12pt; }
+            table { border-collapse: collapse; width: 100%; }
+            th { background: #4472C4; color: white; padding: 4pt 6pt;
+                 border: 1pt solid #345a9e; text-align: center;
+                 font-size: 10pt; font-weight: bold; }
+            td { padding: 3pt 5pt; border: 1pt solid #999;
+                 font-size: 10pt; text-align: center; }
+            td.name { text-align: left; }
+            .summary-table td { border: 1pt solid #ccc; padding: 8pt;
+                                text-align: center; }
+            .summary-label { color: #666; font-size: 9pt;
+                             text-transform: uppercase; }
+            .summary-value { color: #1F3864; font-size: 16pt;
+                             font-weight: bold; }
+        ''')
+        parts.append('</style></head><body>')
+
+        # Header
+        parts.append('<h1>BÁO CÁO CHUYÊN CẦN CẢ NĂM</h1>')
+        parts.append(f'<div class="meta">Ngày xuất: '
+                     f'{datetime.now().strftime("%d/%m/%Y %H:%M")} '
+                     f'&middot; {len(hoc_sinh)} học sinh '
+                     f'&middot; {TONG_TUAN} tuần</div>')
+
+        # Summary
+        parts.append('<table class="summary-table" cellpadding="6" '
+                     'cellspacing="0"><tr>')
+        for label, value in [
+            ("Tổng buổi",   f"{total_all:,}".replace(",", ".")),
+            ("Có mặt",      f"{all_cm:,}".replace(",", ".")),
+            ("Vắng phép",   f"{all_vp:,}".replace(",", ".")),
+            ("Vắng KP",     f"{all_vkp:,}".replace(",", ".")),
+            ("Tỉ lệ chung", f"{rate_all:.1f}%"),
+        ]:
+            parts.append(
+                f'<td><div class="summary-label">{esc(label)}</div>'
+                f'<div class="summary-value">{esc(value)}</div></td>')
+        parts.append('</tr></table>')
+
+        # ── Chuyên cần theo lớp ──
+        parts.append('<h2>📊 Chuyên cần theo lớp</h2>')
+        parts.append('<table cellpadding="4" cellspacing="0" '
+                     'style="width:100%">')
+        parts.append('<tr><th style="width:22%">Lớp</th>'
+                     '<th style="width:63%">Mức chuyên cần</th>'
+                     '<th style="width:15%">Tỉ lệ</th></tr>')
+        for cls, rate, p, tt in class_data:
+            bg, fg = color_of(rate)
+            bar_w = max(1, min(100, rate))
+            rest_w = 100 - bar_w
+            parts.append(
+                f'<tr>'
+                f'<td class="name" style="width:22%">'
+                f'{esc(cls)} <span style="color:#666;font-size:9pt">'
+                f'({p}/{tt})</span></td>'
+                f'<td style="width:63%;padding:2pt 6pt">'
+                f'<table cellpadding="0" cellspacing="0" '
+                f'style="border:none;width:100%"><tr>'
+                f'<td width="{bar_w}%" bgcolor="{bg}" '
+                f'style="background:{bg};height:12pt;border:none">'
+                f'&nbsp;</td>'
+                f'<td width="{rest_w}%" style="border:none">&nbsp;</td>'
+                f'</tr></table></td>'
+                f'<td style="width:15%;font-weight:bold;color:{fg}">'
+                f'{rate:.1f}%</td></tr>')
+        parts.append('</table>')
+
+        # ── Chuyên cần theo tuần ──
+        parts.append('<h2>📈 Tỉ lệ có mặt theo tuần</h2>')
+        for chunk_start in range(0, TONG_TUAN, 10):
+            chunk = week_data[chunk_start:chunk_start + 10]
+            parts.append('<table cellpadding="3" cellspacing="0" '
+                         'style="width:100%;margin:4pt 0">')
+            parts.append('<tr><th style="width:15%">Tuần</th>'
+                         '<th style="width:70%">Tỉ lệ</th>'
+                         '<th style="width:15%">%</th></tr>')
+            for t, rate in chunk:
+                bg, fg = color_of(rate)
+                bar_w = max(1, min(100, rate))
+                rest_w = 100 - bar_w
+                parts.append(
+                    f'<tr><td style="width:15%;font-weight:bold">'
+                    f'T{t}</td>'
+                    f'<td style="width:70%;padding:2pt 6pt">'
+                    f'<table cellpadding="0" cellspacing="0" '
+                    f'style="border:none;width:100%"><tr>'
+                    f'<td width="{bar_w}%" bgcolor="{bg}" '
+                    f'style="background:{bg};height:10pt;border:none">'
+                    f'&nbsp;</td>'
+                    f'<td width="{rest_w}%" style="border:none">'
+                    f'&nbsp;</td></tr></table></td>'
+                    f'<td style="width:15%;font-weight:bold;color:{fg}">'
+                    f'{rate:.1f}%</td></tr>')
+            parts.append('</table>')
+
+        # ── Tỉ lệ HS có lỗi theo tuần ──
+        parts.append('<h2>⚠ Tỉ lệ HS có lỗi theo tuần</h2>')
+        for chunk_start in range(0, TONG_TUAN, 10):
+            chunk = err_data[chunk_start:chunk_start + 10]
+            parts.append('<table cellpadding="3" cellspacing="0" '
+                         'style="width:100%;margin:4pt 0">')
+            parts.append('<tr><th style="width:15%">Tuần</th>'
+                         '<th style="width:70%">Tỉ lệ</th>'
+                         '<th style="width:15%">%</th></tr>')
+            for t, rate in chunk:
+                bar_w = max(0, min(100, rate))
+                rest_w = 100 - bar_w
+                parts.append(
+                    f'<tr><td style="width:15%;font-weight:bold">'
+                    f'T{t}</td>'
+                    f'<td style="width:70%;padding:2pt 6pt">'
+                    f'<table cellpadding="0" cellspacing="0" '
+                    f'style="border:none;width:100%"><tr>'
+                    f'<td width="{bar_w}%" bgcolor="#F97316" '
+                    f'style="background:#F97316;height:10pt;'
+                    f'border:none">&nbsp;</td>'
+                    f'<td width="{rest_w}%" style="border:none">'
+                    f'&nbsp;</td></tr></table></td>'
+                    f'<td style="width:15%;font-weight:bold;'
+                    f'color:#C2410C">{rate:.1f}%</td></tr>')
+            parts.append('</table>')
+
+        # ── Bảng chi tiết ──
+        parts.append('<h2>📋 Bảng chi tiết học sinh</h2>')
+        rows.sort(key=lambda r: r["rate"])
+        parts.append('<table cellpadding="3" cellspacing="0" '
+                     'style="width:100%">')
+        parts.append('<tr>'
+                     '<th style="width:5%">STT</th>'
+                     '<th style="width:7%">Mã</th>'
+                     '<th style="width:26%">Họ tên</th>'
+                     '<th style="width:8%">Lớp</th>'
+                     '<th style="width:6%">Tổ</th>'
+                     '<th style="width:9%">Có mặt</th>'
+                     '<th style="width:9%">Vắng phép</th>'
+                     '<th style="width:9%">Vắng KP</th>'
+                     '<th style="width:7%">Lỗi</th>'
+                     '<th style="width:14%">Tỉ lệ</th>'
+                     '</tr>')
+        for stt, r in enumerate(rows, 1):
+            bg, fg = color_of(r["rate"])
+            parts.append(
+                f'<tr>'
+                f'<td>{stt}</td>'
+                f'<td>{esc(r["ma"])}</td>'
+                f'<td class="name">{esc(r["name"])}</td>'
+                f'<td>{esc(r["class"])}</td>'
+                f'<td>{esc(r["to"])}</td>'
+                f'<td>{r["cm"]}</td>'
+                f'<td>{r["vp"]}</td>'
+                f'<td>{r["vkp"]}</td>'
+                f'<td>{r["loi"]}</td>'
+                f'<td style="background:{bg};color:{fg};font-weight:bold">'
+                f'{r["rate"]:.1f}%</td>'
+                f'</tr>')
+        parts.append('</table>')
+
+        # Footer
+        parts.append('<p style="text-align:center;color:#888;'
+                     'font-size:9pt;margin-top:16pt">'
+                     'Hệ Thống Quản Lý Học Sinh v2.2 — xuất Word</p>')
+        parts.append('</body></html>')
+
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("".join(parts))
+        log_info(f"✓ Xuất Word: {path}")
+        return True
+    except Exception as e:
+        log_error(f"Xuất Word fail: {e}\n{traceback.format_exc()}")
         return False
 
 def _diff_for_warning(local_data, merged_data):
@@ -3555,6 +3867,67 @@ class UngDungQuanLy:
              "Bấm tiêu đề cột để đổi"),
             ("sort_desc", "Hướng sắp xếp", sort_dir, ""),
         ])
+
+        # ── Định dạng xuất cả năm ──
+        tk.Label(inner_cfg, text="📤  Định dạng xuất cả năm",
+                 bg=self.NEN, fg=self.TIM,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(12, 4))
+
+        export_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=8)
+        export_box.pack(fill="x", pady=(0, 6))
+
+        _export_var = tk.StringVar(
+            value=self.settings.get("export_format", "excel"))
+        _cur_lbl_holder = {"w": None}
+
+        def _on_export_change():
+            val = _export_var.get()
+            self.settings["export_format"] = val
+            save_settings(self.settings)
+            label = {"excel": "Excel (.xlsx)",
+                     "word":  "Word (.doc)"}.get(val, val)
+            if _cur_lbl_holder["w"] is not None:
+                try:
+                    _cur_lbl_holder["w"].config(
+                        text=f"Đang chọn: {label}")
+                except Exception:
+                    pass
+            self.thong_bao(f"✓ Định dạng xuất: {label}", self.XANH_LA)
+
+        for _val, _label, _desc in [
+            ("excel", "📊  Excel (.xlsx)",
+             "Nhiều sheet: Tổng hợp + Biểu đồ + mỗi tuần 1 sheet, "
+             "kèm chart Excel native (cần openpyxl)"),
+            ("word",  "📝  Word (.doc)",
+             "Báo cáo đầy đủ: bảng số liệu + biểu đồ SVG + nút in, "
+             "mở được bằng MS Word / LibreOffice"),
+        ]:
+            _r = tk.Frame(export_box, bg=self.NEN2, pady=4)
+            _r.pack(fill="x")
+            tk.Radiobutton(
+                _r, text=_label, variable=_export_var, value=_val,
+                command=_on_export_change,
+                bg=self.NEN2, fg=self.CHU, selectcolor=self.NEN3,
+                activebackground=self.NEN2,
+                activeforeground=self.XANH_DUONG,
+                font=("Segoe UI", 10, "bold"), anchor="w",
+                bd=0, highlightthickness=0, cursor="hand2"
+            ).pack(anchor="w")
+            tk.Label(_r, text="       " + _desc,
+                     bg=self.NEN2, fg=self.CHU_MO,
+                     font=("Segoe UI", 8, "italic"), anchor="w",
+                     justify="left", wraplength=380
+                     ).pack(anchor="w")
+
+        _cur_fmt = self.settings.get("export_format", "excel")
+        _cur_label = {"excel": "Excel (.xlsx)",
+                      "word":  "Word (.doc)"}.get(_cur_fmt, _cur_fmt)
+        _lbl_cur = tk.Label(export_box, text=f"Đang chọn: {_cur_label}",
+                            bg=self.NEN2, fg=self.XANH_LA,
+                            font=("Segoe UI", 9, "bold"), anchor="w")
+        _lbl_cur.pack(fill="x", pady=(6, 0))
+        _cur_lbl_holder["w"] = _lbl_cur
 
         # ── GitHub info ──
         _gh_info = _read_gh_config() or {}
@@ -5496,10 +5869,16 @@ class UngDungQuanLy:
             self._xuat_xls_html()
 
     def xuat_excel_all(self):
-        """Xuất TOÀN BỘ các tuần vào 1 file Excel (mỗi tuần 1 sheet + Tổng hợp)."""
+        """Xuất cả năm theo định dạng đã chọn trong Settings."""
         if not self.HocSinh:
             self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
 
+        fmt = self.settings.get("export_format", "excel")
+        if fmt == "word":
+            self._xuat_word_all()
+            return
+
+        # Mặc định: Excel
         if not OPENPYXL_OK:
             messagebox.showwarning(
                 "Cần openpyxl",
@@ -5539,6 +5918,51 @@ class UngDungQuanLy:
             self.thong_bao(f"✗ Lỗi: {e}", self.DO)
 
         self._async(task, on_success=on_done, on_error=on_err)
+
+    def _xuat_word_all(self):
+        """Xuất báo cáo cả năm dạng Word (.doc)."""
+        path = filedialog.asksaveasfilename(
+            defaultextension=".doc",
+            filetypes=[("Word files", "*.doc"),
+                       ("All files", "*.*")],
+            initialfile="bao_cao_ca_nam.doc")
+        if not path: return
+
+        hs_snapshot = deepcopy(self.HocSinh)
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+
+        self._start_progress()
+        self.thong_bao("⏳ Đang xuất Word...", self.XANH_DUONG)
+
+        def task():
+            return _build_word_report(hs_snapshot, path, ly_do_md)
+
+        def on_done(ok):
+            self._stop_progress()
+            if ok:
+                self.thong_bao(
+                    f"✓ Đã xuất Word: {os.path.basename(path)}",
+                    self.XANH_LA)
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(path)
+                    elif sys.platform == "darwin":
+                        import subprocess
+                        subprocess.Popen(["open", path])
+                    else:
+                        import subprocess
+                        subprocess.Popen(["xdg-open", path])
+                except Exception as e:
+                    log_warn(f"Không mở được Word: {e}")
+            else:
+                self.thong_bao("✗ Lỗi xuất Word — xem app.log", self.DO)
+
+        def on_err(e):
+            self._stop_progress()
+            self.thong_bao(f"✗ Lỗi: {e}", self.DO)
+
+        self._async(task, on_success=on_done, on_error=on_err)
+
 
     def xuat_bao_cao_html(self):
         """Xuất báo cáo HTML (cả năm) — mở bằng trình duyệt, Ctrl+P để in."""
