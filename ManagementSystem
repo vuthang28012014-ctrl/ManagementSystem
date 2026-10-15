@@ -74,7 +74,14 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════
 # PATHS & CONSTANTS
 # ═══════════════════════════════════════════════════════════════
-SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
+# Detect frozen .exe (PyInstaller --onefile) vs chạy từ source
+if getattr(sys, "frozen", False):
+    # Đang chạy .exe → dùng thư mục chứa .exe
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+else:
+    # Chạy từ source .py
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 GH_CONFIG_FILE = os.path.join(SCRIPT_DIR, "github_config.json")
 SETTINGS_FILE  = os.path.join(SCRIPT_DIR, "settings.json")
 DATA_FILE      = os.path.join(SCRIPT_DIR, "output.txt")
