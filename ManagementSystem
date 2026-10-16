@@ -60,7 +60,7 @@ LOG_FILE       = os.path.join(SCRIPT_DIR, "app.log")
 # ═══════════════════════════════════════════════════════════════
 # AUTO UPDATE CONFIG
 # ═══════════════════════════════════════════════════════════════
-APP_VERSION   = "2.2"           # ← Tăng lên mỗi lần phát hành
+APP_VERSION   = "2.3"           # ← Tăng lên mỗi lần phát hành
 UPDATE_URL    = ("https://raw.githubusercontent.com/"
                  "vuthang28012014-ctrl/ManagementSystem/"
                  "refs/heads/main/ManagementSystem")
@@ -464,6 +464,143 @@ def _prompt_github_token(root, current_token=""):
 
     root.wait_window(dlg)
     return result["token"]
+
+def _prompt_password(root):
+    """
+    Dialog xác thực khi mở app.
+    Trả về:
+      - True  → mật khẩu đúng = "2014"  → FULL ACCESS
+      - False → bấm "Bỏ qua"           → READ-ONLY
+    """
+    result = {"full": False}
+
+    dlg = tk.Toplevel(root)
+    dlg.title("🔒 Xác thực quyền truy cập")
+    dlg.configure(bg="#1e1e2e")
+    dlg.resizable(False, False)
+
+    W, H = 500, 410
+    try:
+        root.update_idletasks()
+        x = (root.winfo_screenwidth() // 2) - (W // 2)
+        y = (root.winfo_screenheight() // 2) - (H // 2)
+        dlg.geometry(f"{W}x{H}+{x}+{y}")
+    except Exception:
+        dlg.geometry(f"{W}x{H}")
+
+    # ── Header ──
+    header = tk.Frame(dlg, bg="#282a3a", height=56)
+    header.pack(fill="x"); header.pack_propagate(False)
+    tk.Label(header, text="🔒  XÁC THỰC QUYỀN TRUY CẬP",
+             bg="#282a3a", fg="#cba6f7",
+             font=("Segoe UI", 13, "bold")
+             ).pack(side="left", padx=18, pady=14)
+
+    # ── Body ──
+    body = tk.Frame(dlg, bg="#1e1e2e")
+    body.pack(fill="both", expand=True, padx=24, pady=16)
+
+    tk.Label(body,
+             text="Nhập mật khẩu để có toàn quyền chỉnh sửa.\n"
+                  "Hoặc bấm 'Bỏ qua' để vào chế độ CHỈ XEM.",
+             bg="#1e1e2e", fg="#cdd6f4",
+             font=("Segoe UI", 10), anchor="w",
+             justify="left").pack(fill="x", pady=(0, 14))
+
+    tk.Label(body, text="Mật khẩu:",
+             bg="#1e1e2e", fg="#cdd6f4",
+             font=("Segoe UI", 10, "bold"),
+             anchor="w").pack(fill="x", pady=(0, 6))
+
+    pwd_var = tk.StringVar()
+    entry = tk.Entry(body, textvariable=pwd_var,
+                     bg="#313244", fg="#cdd6f4",
+                     insertbackground="#cdd6f4",
+                     relief="flat", font=("Consolas", 12),
+                     show="●")
+    entry.pack(fill="x", ipady=8)
+    entry.focus_set()
+
+    show_var = tk.BooleanVar(value=False)
+    def toggle_show():
+        entry.config(show="" if show_var.get() else "●")
+
+    tk.Checkbutton(body, text="👁  Hiện mật khẩu",
+                   variable=show_var, command=toggle_show,
+                   bg="#1e1e2e", fg="#7f849c",
+                   selectcolor="#313244",
+                   activebackground="#1e1e2e",
+                   activeforeground="#cdd6f4",
+                   font=("Segoe UI", 9), bd=0,
+                   highlightthickness=0,
+                   cursor="hand2").pack(anchor="w", pady=(6, 0))
+
+    # Label lỗi
+    err_lbl = tk.Label(body, text="", bg="#1e1e2e", fg="#f38ba8",
+                        font=("Segoe UI", 9, "italic"), anchor="w")
+    err_lbl.pack(fill="x", pady=(10, 0))
+
+    # Hint nhỏ
+    tk.Label(body, text="(Gợi ý: 4 chữ số · năm sinh của chủ sở hữu)",
+             bg="#1e1e2e", fg="#585b70",
+             font=("Segoe UI", 8, "italic"), anchor="w"
+             ).pack(fill="x", pady=(8, 0))
+
+    # ── Footer ──
+    footer = tk.Frame(dlg, bg="#282a3a", height=64)
+    footer.pack(fill="x", side="bottom")
+    footer.pack_propagate(False)
+
+    def on_skip():
+        result["full"] = False
+        dlg.destroy()
+
+    def on_unlock():
+        pwd = pwd_var.get().strip()
+        if pwd == "2014":
+            result["full"] = True
+            dlg.destroy()
+        else:
+            err_lbl.config(text="✗ Mật khẩu không đúng. Thử lại hoặc Bỏ qua.")
+            pwd_var.set("")
+            entry.focus_set()
+
+    tk.Button(footer, text="Bỏ qua (Chỉ xem)",
+              command=on_skip,
+              bg="#313244", fg="#cdd6f4",
+              activebackground="#45475a",
+              activeforeground="#cdd6f4",
+              relief="flat", cursor="hand2",
+              font=("Segoe UI", 10, "bold"),
+              padx=20, pady=6, bd=0
+              ).pack(side="right", padx=(6, 18), pady=14)
+
+    tk.Button(footer, text="🔓  Mở khoá",
+              command=on_unlock,
+              bg="#89b4fa", fg="#1e1e2e",
+              activebackground="#74c7ec",
+              activeforeground="#1e1e2e",
+              relief="flat", cursor="hand2",
+              font=("Segoe UI", 10, "bold"),
+              padx=20, pady=6, bd=0
+              ).pack(side="right", padx=6, pady=14)
+
+    entry.bind("<Return>", lambda e: on_unlock())
+    dlg.bind("<Escape>",   lambda e: on_skip())
+    dlg.protocol("WM_DELETE_WINDOW", on_skip)
+
+    try:
+        dlg.deiconify()
+        dlg.lift()
+        dlg.focus_force()
+        dlg.attributes("-topmost", True)
+        dlg.after(500, lambda: dlg.attributes("-topmost", False))
+        dlg.grab_set()
+    except Exception as e:
+        log_warn(f"Password dialog setup fail: {e}")
+
+    root.wait_window(dlg)
+    return result["full"]
 
 def _load_gh_config():
     """Ưu tiên ENV GITHUB_TOKEN, fallback file config."""
@@ -1683,7 +1820,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
         parts.append('</table>')
 
         parts.append('<div class="footer">'
-                     'Hệ Thống Quản Lý Học Sinh v2.1 — '
+                     'Hệ Thống Quản Lý Học Sinh v2.3 — '
                      'in bằng Ctrl+P hoặc nút phía trên</div>')
         parts.append('</div></body></html>')
 
@@ -1981,7 +2118,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
         # Footer
         parts.append('<p style="text-align:center;color:#888;'
                      'font-size:9pt;margin-top:16pt">'
-                     'Hệ Thống Quản Lý Học Sinh v2.2 — xuất Word</p>')
+                     'Hệ Thống Quản Lý Học Sinh v2.3 — xuất Word</p>')
         parts.append('</body></html>')
 
         with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -2872,7 +3009,7 @@ class UngDungQuanLy:
         global GH_CONFIG
 
         self.root = root
-        self.root.title("Hệ Thống Quản Lý Học Sinh v2.0")
+        self.root.title("Hệ Thống Quản Lý Học Sinh v2.3")
         self.root.geometry("1280x880")
         self.root.configure(bg=self.NEN)
         self.root.minsize(1120, 760)
@@ -2910,9 +3047,22 @@ class UngDungQuanLy:
         # Undo
         self.undo_stack = UndoStack(self.settings["undo_stack_size"])
 
+        # ═══════════════════════════════════════════════
+        # BƯỚC 1: XÁC THỰC MẬT KHẨU (làm TRƯỚC mọi thứ khác)
+        # ═══════════════════════════════════════════════
+        self.root.withdraw()          # ẩn cửa sổ chính
+        self.root.update()
+        self.read_only = not _prompt_password(self.root)
+        self.root.deiconify()
+        self.root.update()
+
+        if self.read_only:
+            log_info("🔒 Chế độ CHỈ XEM — không thể chỉnh sửa")
+        else:
+            log_info("🔓 Chế độ FULL ACCESS — có thể chỉnh sửa")
+
         # ── Setup GitHub token lần đầu ──
         if not os.path.exists(GH_CONFIG_FILE):
-            self.root.update()          # ← dùng update() thay vì update_idletasks()
             token = _prompt_github_token(self.root)
             _write_gh_config(token or "")
 
@@ -2930,6 +3080,10 @@ class UngDungQuanLy:
         self._cai_dat_style()
         self._tao_giao_dien()
         self._bind_shortcuts()
+
+        # ── Áp dụng giao diện read-only (nếu cần) ──
+        if self.read_only:
+            self._apply_read_only_ui()
 
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
@@ -2967,6 +3121,55 @@ class UngDungQuanLy:
         # ── Animation: fade in cửa sổ ──
         if self.settings.get("enable_animation", True):
             fade_in_window(self.root)
+
+    # ═══ Quyền truy cập ═══
+    def _can_write(self):
+        """Trả True nếu có quyền ghi. Hiện cảnh báo nếu không."""
+        if getattr(self, "read_only", False):
+            self.thong_bao(
+                "🔒 Chế độ CHỈ XEM — không thể chỉnh sửa. "
+                "Mở lại app và nhập mật khẩu để có toàn quyền.",
+                self.DO)
+            return False
+        return True
+
+    def _apply_read_only_ui(self):
+        """Đổi tiêu đề + disable các nút chỉnh sửa (chỉ UX)."""
+        try:
+            self.root.title("Hệ Thống Quản Lý Học Sinh v2.3 — 🔒 CHỈ XEM")
+        except Exception:
+            pass
+
+        # Badge trên header
+        if hasattr(self, "gh_badge"):
+            try:
+                self.gh_badge.config(text="🔒 CHỈ XEM",
+                                     fg=self.DO, bg=self.NEN3)
+            except Exception:
+                pass
+
+        # Disable các nút chỉnh sửa (nếu có ref)
+        for attr in ("nut_them_sua", "nut_xoa_hs", "nut_luu",
+                     "nut_undo", "nut_lam_moi"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.config(state="disabled",
+                             disabledforeground=self.CHU_MO,
+                             cursor="")
+                except Exception:
+                    pass
+
+        # Disable các ô nhập form thêm HS
+        for attr in ("o_ma", "o_ten", "o_lop", "o_to"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.config(state="disabled",
+                             disabledbackground=self.NEN,
+                             disabledforeground=self.CHU_MO)
+                except Exception:
+                    pass
 
     # ═══ Threading helpers ═══
     def _async(self, fn, on_success=None, on_error=None):
@@ -4098,7 +4301,7 @@ class UngDungQuanLy:
         footer = tk.Frame(card, bg=self.NEN2, height=52)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
-        tk.Label(footer, text="ManagementSystem v2.1 — Py 3.12+ / Tkinter",
+        tk.Label(footer, text="ManagementSystem v2.3 — Py 3.12+ / Tkinter",
                  bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 8, "italic")).pack(side="left", padx=15)
         tk.Button(footer, text="Đóng", command=lambda: close_settings(),
@@ -4275,6 +4478,7 @@ class UngDungQuanLy:
         canvas.bind("<Enter>", _enter)
         canvas.bind("<Leave>", _leave)
 
+        # ════════ FORM THÊM HỌC SINH ════════
         tk.Label(form, text="THÊM HỌC SINH",
                  bg=self.NEN2, fg=self.XANH_DUONG,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=20, pady=(20, 10))
@@ -4288,12 +4492,15 @@ class UngDungQuanLy:
             form, "➕  Thêm học sinh", self.them_hoc_sinh,
             self.XANH_DUONG, self.XANH_DUONG_H)
         self.nut_them_sua.pack(fill="x", padx=20, pady=(20, 8))
-        self._tao_nut(form, "🔄  Làm mới form (Esc)", self.xoa_form,
-                      self.NEN3, self.NEN3
-                      ).pack(fill="x", padx=20, pady=(0, 20))
+
+        self.nut_lam_moi = self._tao_nut(
+            form, "🔄  Làm mới form (Esc)", self.xoa_form,
+            self.NEN3, self.NEN3)
+        self.nut_lam_moi.pack(fill="x", padx=20, pady=(0, 20))
 
         tk.Frame(form, bg=self.NEN3, height=1).pack(fill="x", padx=20)
 
+        # ════════ TÌM NHANH ════════
         tk.Label(form, text="TÌM NHANH",
                  bg=self.NEN2, fg=self.XANH_DUONG,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=20, pady=(20, 8))
@@ -4307,10 +4514,17 @@ class UngDungQuanLy:
 
         tk.Frame(form, bg=self.NEN3, height=1).pack(fill="x", padx=20, pady=(5, 0))
 
-        self._tao_nut(form, "❌  Xóa HS đã chọn", self.xoa_da_chon,
-                      self.DO, "#eb6f92").pack(fill="x", padx=20, pady=(15, 8))
-        self._tao_nut(form, "💾  Lưu (Ctrl+S)", self.luu_ngay,
-                      self.XANH_LA, "#94e2d5").pack(fill="x", padx=20, pady=(0, 8))
+        # ════════ CÁC NÚT THAO TÁC ════════
+        self.nut_xoa_hs = self._tao_nut(
+            form, "❌  Xóa HS đã chọn", self.xoa_da_chon,
+            self.DO, "#eb6f92")
+        self.nut_xoa_hs.pack(fill="x", padx=20, pady=(15, 8))
+
+        self.nut_luu = self._tao_nut(
+            form, "💾  Lưu (Ctrl+S)", self.luu_ngay,
+            self.XANH_LA, "#94e2d5")
+        self.nut_luu.pack(fill="x", padx=20, pady=(0, 8))
+
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
                       self.XANH_DUONG, self.XANH_DUONG_H
                       ).pack(fill="x", padx=20, pady=(0, 8))
@@ -4322,8 +4536,11 @@ class UngDungQuanLy:
                       "#1B5E20", "#2E7D32").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "🖨  In báo cáo", self.xuat_bao_cao_html,
                       "#4527A0", "#5E35B1").pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "↩  Undo (Ctrl+Z)", self.undo,
-                      self.NEN3, self.NEN3).pack(fill="x", padx=20, pady=(0, 20))
+
+        self.nut_undo = self._tao_nut(
+            form, "↩  Undo (Ctrl+Z)", self.undo,
+            self.NEN3, self.NEN3)
+        self.nut_undo.pack(fill="x", padx=20, pady=(0, 20))
 
     def _tao_cot_giua(self, parent):
         giua = tk.Frame(parent, bg=self.NEN)
@@ -4668,6 +4885,7 @@ class UngDungQuanLy:
 
     # ═══ GitHub Actions ═══
     def keo_github(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         global GH_CONFIG
         if not GH_CONFIG:
             self.thong_bao("⚠ Chưa có github_config.json", self.VANG); return
@@ -4831,6 +5049,7 @@ class UngDungQuanLy:
     # ═══ HS CRUD ═══
     def them_hoc_sinh(self):
         """Thêm mới nếu Mã chưa có, cập nhật nếu Mã đã tồn tại."""
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         ma_str = self.o_ma.get().strip()
         ten    = self.o_ten.get().strip()
         lop    = self.o_lop.get().strip()
@@ -4915,6 +5134,7 @@ class UngDungQuanLy:
                 self.bang, str(ma), color="#3f5a3f", duration=500))
 
     def xoa_da_chon(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         sel = self.bang.selection()
         if not sel:
             self.thong_bao("⚠ Chưa chọn HS nào", self.VANG); return
@@ -4938,6 +5158,7 @@ class UngDungQuanLy:
         self.thong_bao(f"✓ Đã xóa {len(ds_ma)} HS (Ctrl+Z để hoàn tác)", self.XANH_LA)
 
     def luu_ngay(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if self._saving:
             self.thong_bao("⏳ Đang lưu...", self.VANG)
             return
@@ -5302,6 +5523,7 @@ class UngDungQuanLy:
         self._doi_trang_thai(*cell)
 
     def _doi_trang_thai(self, ma, day):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self._tuan_co_the_sua():
             self.thong_bao(
                 f"⚠ Tuần {self.tuan_hien_tai} đã khóa (max={self.settings['max_editable_week']})",
@@ -5523,6 +5745,7 @@ class UngDungQuanLy:
         animate()
 
     def luu_ly_do(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
         ma, day = self.o_hien_tai
@@ -5546,6 +5769,7 @@ class UngDungQuanLy:
             flash_row(self.bang_dd, str(ma), color="#4a4a5b", duration=380)
 
     def danh_dau_khong_phep(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
         ma, day = self.o_hien_tai
@@ -5566,6 +5790,7 @@ class UngDungQuanLy:
                         f"{self.settings['ly_do_mac_dinh']}", self.DO)
 
     def luu_loi(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
         ma, day = self.o_hien_tai
@@ -5590,6 +5815,7 @@ class UngDungQuanLy:
             flash_row(self.bang_dd, str(ma), color="#5b4a3f", duration=380)
 
     def xoa_loi(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self.o_hien_tai:
             self.thong_bao("⚠ Chưa chọn ô nào", self.VANG); return
         ma, day = self.o_hien_tai
@@ -5611,6 +5837,7 @@ class UngDungQuanLy:
 
     # ═══ Bulk ═══
     def danh_dau_tat_ca(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self._tuan_co_the_sua():
             self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
             self._pulse_locked()
@@ -5631,6 +5858,7 @@ class UngDungQuanLy:
                         f"cho {len(ds_ma)} HS", self.XANH_LA)
 
     def bo_danh_dau_tat_ca(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if not self._tuan_co_the_sua():
             self.thong_bao(f"⚠ Tuần {self.tuan_hien_tai} đã khóa", self.DO)
             self._pulse_locked()
@@ -6273,6 +6501,7 @@ class UngDungQuanLy:
         self.root.after(ms, self._auto_save_tick)
 
     def _auto_save_tick(self):
+        if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if self._dirty and not self._saving:
             log_info("Auto-save...")
             self.luu_ngay()
@@ -6891,7 +7120,8 @@ class UngDungQuanLy:
             try: self.root.after_cancel(self.hen_gio_click)
             except Exception: pass
 
-        if self._dirty:
+        # Chỉ ghi output.txt khi CÓ quyền ghi VÀ có thay đổi chưa lưu
+        if self._dirty and not getattr(self, "read_only", False):
             # Save trong thread — không block UI, chờ tối đa 3 giây
             done = {"ok": False}
 
@@ -6920,7 +7150,7 @@ class UngDungQuanLy:
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print("═" * 62)
-    print("  HỆ THỐNG QUẢN LÝ HỌC SINH v2.0")
+    print("  HỆ THỐNG QUẢN LÝ HỌC SINH v2.3")
     print("═" * 62)
     if os.path.exists(GH_CONFIG_FILE):
         print(f"  Config: {GH_CONFIG_FILE}")
