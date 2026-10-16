@@ -1,6 +1,6 @@
 """
 ═════════════════════════════════════════════════════════════════
-Hệ Thống Quản Lý Học Sinh v2.3 — Full Fixes
+Hệ Thống Quản Lý Học Sinh v2.4 — Full Fixes
 ═════════════════════════════════════════════════════════════════
 """
 import os
@@ -12,10 +12,15 @@ import threading
 import traceback
 import random
 import hashlib
+import html as _html
+import queue
+import re
 import shutil
+from xml.sax.saxutils import escape as xml_escape
 from datetime import datetime, timezone
 from collections import deque
 from copy import deepcopy
+from typing import Any, Optional
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import tkinter.font as tkfont
@@ -40,6 +45,173 @@ try:
     OPENPYXL_OK = True
 except ImportError:
     OPENPYXL_OK = False
+# ═══════════════════════════════════════════════════════════════
+# ZALO BOT PLATFORM
+# ═══════════════════════════════════════════════════════════════
+ZALO_API_BASE = "https://bot-api.zaloplatforms.com"
+
+
+def zalo_send(bot_token, chat_id, text, timeout=12, parse_mode="html"):
+    """Gửi tin nhắn qua Zalo Bot Platform. Trả (ok, err)."""
+    if not URLLIB_OK:
+        return False, "Thiếu urllib"
+    if not bot_token or not chat_id:
+        return False, "Thiếu token/chat_id"
+    try:
+        url = f"{ZALO_API_BASE}/bot{bot_token.strip()}/sendMessage"
+        body = json.dumps({
+            "chat_id": str(chat_id).strip(),
+            "text": text,
+            "parse_mode": parse_mode,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok", True):
+                    return True, None
+                return False, data.get("description", "unknown error")
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            return False, f"HTTP {e.code}: {err_body[:150]}"
+        except Exception:
+            return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, str(e)
+
+
+def zalo_test(bot_token, chat_id):
+    """Gửi tin nhắn test qua Zalo."""
+    msg = (f"✅ <b>Test thành công!</b>\n"
+           f"Thời gian: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+           f"Từ: Hệ Thống Quản Lý Học Sinh v{APP_VERSION}")
+    return zalo_send(bot_token, chat_id, msg)
+
+
+def _build_zalo_absent_message(hoc_sinh, tuan, ly_do_md, min_absent=1):
+    """Tạo tin nhắn thông báo HS vắng cho Zalo."""
+    vang = []
+    for ma, d in hoc_sinh.items():
+        w = d.get("weeks", {}).get(tuan) or {}
+        att = w.get("attendance", {})
+        rea = w.get("reasons", {})
+        n_vang = 0
+        chi_tiet = []
+        for day in THU:
+            lo = phan_loai_o(att.get(day, False), rea.get(day, ""), ly_do_md)
+            if lo in ("vp", "vkp"):
+                r = (rea.get(day, "") or "").strip()
+                loai = "✗" if lo == "vp" else "⊘"
+                n_vang += 1
+                chi_tiet.append(f"  {loai} {day} ({_html.escape(r)})")
+        if n_vang >= min_absent:
+            vang.append({
+                "ma": ma,
+                "name": _html.escape(str(d["name"])),
+                "class": _html.escape(str(d["class"])),
+                "to": _html.escape(str(d.get("to", "") or "")) or "—",
+                "n_vang": n_vang, "chi_tiet": chi_tiet,
+            })
+
+    if not vang:
+        return ""
+
+    vang.sort(key=lambda x: (-x["n_vang"], x["name"].lower()))
+
+    # Zalo Bot hỗ trợ HTML: <b>, <i>, <u>, <s>, <code>
+    lines = [
+        f"⚠️ <b>THÔNG BÁO VẮNG — TUẦN {tuan}</b>",
+        f"Thời gian: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        f"Số HS vắng: <b>{len(vang)}</b>",
+        "",
+    ]
+    for i, v in enumerate(vang, 1):
+        to = f" · Tổ {v['to']}" if v["to"] != "—" else ""
+        lines.append(
+            f"<b>{i}. {v['name']}</b> — Mã {v['ma']} · Lớp {v['class']}{to} "
+            f"— vắng <b>{v['n_vang']}</b> buổi")
+        for ct in v["chi_tiet"]:
+            lines.append(ct)
+        lines.append("")
+    return "\n".join(lines)
+# ═══════════════════════════════════════════════════════════════
+# PDF — reportlab
+# ═══════════════════════════════════════════════════════════════
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                     Paragraph, Spacer, PageBreak)
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    REPORTLAB_OK = True
+except ImportError:
+    REPORTLAB_OK = False
+
+
+def _find_vn_font():
+    """
+    Tìm font hỗ trợ tiếng Việt trên hệ thống.
+    Trả (regular_path, bold_path) hoặc (None, None).
+    """
+    import platform
+    sysname = platform.system()
+    candidates = []
+    if sysname == "Windows":
+        win = os.environ.get("WINDIR", r"C:\Windows")
+        fdir = os.path.join(win, "Fonts")
+        candidates = [
+            (os.path.join(fdir, "arial.ttf"),     os.path.join(fdir, "arialbd.ttf")),
+            (os.path.join(fdir, "times.ttf"),     os.path.join(fdir, "timesbd.ttf")),
+            (os.path.join(fdir, "segoeui.ttf"),   os.path.join(fdir, "segoeuib.ttf")),
+            (os.path.join(fdir, "tahoma.ttf"),    os.path.join(fdir, "tahomabd.ttf")),
+        ]
+    elif sysname == "Darwin":
+        candidates = [
+            ("/System/Library/Fonts/Supplemental/Arial.ttf",
+             "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+            ("/Library/Fonts/Arial.ttf", "/Library/Fonts/Arial Bold.ttf"),
+        ]
+    else:
+        candidates = [
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        ]
+    for reg, bold in candidates:
+        if os.path.exists(reg):
+            return reg, (bold if os.path.exists(bold) else reg)
+    return None, None
+
+
+# Đăng ký font 1 lần
+_VN_FONT_REG = "Helvetica"
+_VN_FONT_BOLD = "Helvetica-Bold"
+if REPORTLAB_OK:
+    try:
+        _r, _b = _find_vn_font()
+        if _r:
+            pdfmetrics.registerFont(TTFont("VNFont", _r))
+            _VN_FONT_REG = "VNFont"
+        if _b:
+            pdfmetrics.registerFont(TTFont("VNFont-Bold", _b))
+            _VN_FONT_BOLD = "VNFont-Bold"
+        if _VN_FONT_REG == "VNFont":
+            pdfmetrics.registerFontFamily(
+                "VNFont", normal="VNFont", bold=_VN_FONT_BOLD,
+                italic="VNFont", boldItalic=_VN_FONT_BOLD)
+    except Exception as _e:
+        print(f"[PDF] Không đăng ký được font Việt: {_e}")
 
 # ═══════════════════════════════════════════════════════════════
 # PATHS & CONSTANTS
@@ -60,13 +232,14 @@ LOG_FILE       = os.path.join(SCRIPT_DIR, "app.log")
 # ═══════════════════════════════════════════════════════════════
 # AUTO UPDATE CONFIG
 # ═══════════════════════════════════════════════════════════════
-APP_VERSION   = "2.3"           # ← Tăng lên mỗi lần phát hành
+APP_VERSION   = "2.5"           # ← Tăng lên mỗi lần phát hành
 UPDATE_URL    = ("https://raw.githubusercontent.com/"
                  "vuthang28012014-ctrl/ManagementSystem/"
                  "refs/heads/main/ManagementSystem")
 UPDATE_CHECK_INTERVAL_S = 6 * 3600   # Cooldown 6 giờ
 
 THU = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+NGAY_KHONG_HOC = ("CN",)   # ngày này không bị "Tất cả có mặt / Bỏ hết" đụng tới
 COT_DIEMDANH = ["ten"] + THU
 COT_TEN = "ten"
 TONG_TUAN = 35
@@ -89,8 +262,22 @@ DEFAULT_SETTINGS = {
     "auto_check_update":    True,
     "export_format":        "excel",   # ← THÊM DÒNG NÀY
     "last_update_check":   0,
+    "migrated_unrecorded": False,
+    "script_path":         "",
     "ly_do_goi_y":          ["Không phép", "Có phép", "Ốm", "Việc gia đình",
                               "Đi khám bệnh", "Đại hội", "Thi HSG"],
+    # ── Zalo Bot notification ──
+    "zalo_enabled":            False,
+    "zalo_bot_token":          "",
+    "zalo_chat_id":            "",
+    "zalo_notify_on_save":     True,
+    "zalo_min_absent":         1,
+    "zalo_last_sent":          0,
+    # ── PDF ──
+    "pdf_open_after_export":  True,
+    
+    # ── Thống kê ──
+    "stats_period":           "year",   # "year" | "hk1" | "hk2" | "month_1".."month_12"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -127,8 +314,7 @@ def load_settings():
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for k, v in data.items():
-                if k in s:
-                    s[k] = v
+                s[k] = v
         except Exception as e:
             log_warn(f"Không đọc được settings.json: {e}")
     return s
@@ -276,6 +462,7 @@ except ImportError:
     URLLIB_OK = False
 
 GH_CONFIG = None
+LOADED_FROM_REMOTE = False   # True nếu lần tải gần nhất lấy được dữ liệu từ GitHub
 # ═══════════════════════════════════════════════════════════════
 # GITHUB CONFIG — TOKEN SETUP
 # ═══════════════════════════════════════════════════════════════
@@ -541,7 +728,7 @@ def _prompt_password(root):
     err_lbl.pack(fill="x", pady=(10, 0))
 
     # Hint nhỏ
-    tk.Label(body, text="(Gợi ý: 4 chữ số · năm sinh của chủ sở hữu)",
+    tk.Label(body, text="(Nhập mật khẩu đã được đưa)",
              bg="#1e1e2e", fg="#585b70",
              font=("Segoe UI", 8, "italic"), anchor="w"
              ).pack(fill="x", pady=(8, 0))
@@ -646,31 +833,66 @@ def _load_gh_config():
     return cfg
 
 
-def github_fetch(config, timeout=15):
-    """Tải file từ GitHub. Trả string hoặc None."""
+def github_fetch_ex(config, timeout=15):
+    """
+    Tải file bằng Contents API (có token nên đọc được repo private).
+    Trả (status, content, sha):
+      "ok"      -> content là chuỗi, sha là SHA của file
+      "missing" -> file chưa tồn tại
+      "error"   -> lỗi mạng / quyền / rate limit (content = None)
+    """
     if not URLLIB_OK or not config:
-        return None
-    url = (f"https://raw.githubusercontent.com/{config['owner']}/{config['repo']}/"
-           f"{config['branch']}/{config['path']}?t={int(_time.time())}")
+        return "error", None, None
+    api_url = (f"https://api.github.com/repos/{config['owner']}/"
+               f"{config['repo']}/contents/{config['path']}"
+               f"?ref={config['branch']}")
+    headers = {
+        "Accept":        "application/vnd.github.v3+json",
+        "User-Agent":    "ManagementSystem/2.5",
+        "Cache-Control": "no-cache",
+    }
+    if config.get("token"):
+        headers["Authorization"] = f"token {config['token']}"
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "ManagementSystem/2.0",
-            "Cache-Control": "no-cache",
-        })
+        req = urllib.request.Request(api_url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8")
+            meta = json.loads(resp.read().decode("utf-8"))
+        sha = meta.get("sha")
+        if meta.get("encoding") == "base64" and meta.get("content"):
+            return "ok", base64.b64decode(meta["content"]).decode("utf-8"), sha
+        # File lớn hơn 1MB: Contents API không trả content -> tải bản raw
+        raw_headers = dict(headers)
+        raw_headers["Accept"] = "application/vnd.github.v3.raw"
+        req2 = urllib.request.Request(api_url, headers=raw_headers)
+        with urllib.request.urlopen(req2, timeout=timeout) as resp2:
+            return "ok", resp2.read().decode("utf-8"), sha
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            log_info("GitHub: file chưa tồn tại → bắt đầu rỗng")
-            return "{}"
-        if e.code == 403:
-            log_error("GitHub: 403 – rate limit hoặc token sai")
-            return None
+            try:
+                msg = json.loads(e.read().decode("utf-8")).get("message", "")
+            except Exception:
+                msg = ""
+            if "No commit found" in msg:
+                log_error("GitHub: sai tên branch")
+                return "error", None, None
+            log_info("GitHub: file chưa tồn tại")
+            return "missing", None, None
+        if e.code in (401, 403):
+            log_error(f"GitHub: HTTP {e.code} (token sai hoặc rate limit)")
+            return "error", None, None
         log_error(f"GitHub fetch HTTP {e.code}")
-        return None
+        return "error", None, None
     except Exception as e:
         log_error(f"GitHub fetch: {e}")
-        return None
+        return "error", None, None
+
+
+def github_fetch(config, timeout=15):
+    """Tải file từ GitHub. Trả string, hoặc None nếu không có file / lỗi."""
+    status, content, _sha = github_fetch_ex(config, timeout)
+    if status == "ok":
+        return content
+    return None
 
 
 def github_push(config, content, commit_msg=None):
@@ -739,7 +961,10 @@ def github_push(config, content, commit_msg=None):
 
     return False, "Conflict sau 3 lần thử"
 
-def github_push_ex(config, content, commit_msg=None):
+_SHA_AUTO = object()
+
+
+def github_push_ex(config, content, commit_msg=None, sha=_SHA_AUTO):
     """
     Giống github_push nhưng trả (ok, err, conflict).
     conflict=True → caller nên pull lại và merge rồi thử lại.
@@ -773,7 +998,8 @@ def github_push_ex(config, content, commit_msg=None):
             log_error(f"GitHub lấy SHA: {e}")
             return None
 
-    sha = get_sha()
+    if sha is _SHA_AUTO:
+        sha = get_sha()
     body = {
         "message": commit_msg,
         "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
@@ -857,7 +1083,13 @@ def github_content_at_sha(config, sha):
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return base64.b64decode(data["content"]).decode("utf-8")
+        if data.get("content"):
+            return base64.b64decode(data["content"]).decode("utf-8")
+        raw_headers = dict(headers)
+        raw_headers["Accept"] = "application/vnd.github.v3.raw"
+        req2 = urllib.request.Request(url, headers=raw_headers)
+        with urllib.request.urlopen(req2, timeout=30) as resp2:
+            return resp2.read().decode("utf-8")
     except Exception as e:
         log_error(f"Fetch content @{sha[:7]} fail: {e}")
         return None
@@ -904,10 +1136,277 @@ def tuan_moi():
 def tao_du_lieu_tat_ca_tuan():
     return {t: tuan_moi() for t in range(1, TONG_TUAN + 1)}
 
+def phan_loai_o(att, reason, ly_do_md):
+    """
+    Phân loại 1 ô điểm danh:
+      'cm'   có mặt
+      'vp'   vắng có phép (lý do riêng)
+      'vkp'  vắng không phép (lý do = lý do mặc định)
+      'chua' chưa điểm danh (không tick, không lý do) -> KHÔNG tính thống kê
+    """
+    if att:
+        return "cm"
+    r = (reason or "").strip()
+    if not r:
+        return "chua"
+    if r == ly_do_md:
+        return "vkp"
+    return "vp"
+
+
+def migrate_unrecorded(hoc_sinh, ly_do_md):
+    """
+    Dữ liệu cũ: ghi_file từng tự điền lý do mặc định cho MỌI ô vắng,
+    kể cả ngày chưa điểm danh. Hàm này trả các ô đó về 'chưa điểm danh':
+      - Tuần mà không ai có mặt ngày nào và không ai có lý do riêng
+        -> coi cả tuần là chưa điểm danh.
+      - Ngày không học (CN): bỏ lý do mặc định.
+    Trả về số ô đã sửa.
+    """
+    n_fix = 0
+    tuan_set = set()
+    for d in hoc_sinh.values():
+        tuan_set.update(d.get("weeks", {}).keys())
+    for t in tuan_set:
+        tuan_trong = True
+        for d in hoc_sinh.values():
+            w = d.get("weeks", {}).get(t) or {}
+            att = w.get("attendance", {})
+            rea = w.get("reasons", {})
+            for day in THU:
+                if att.get(day, False):
+                    tuan_trong = False
+                    break
+                r = (rea.get(day, "") or "").strip()
+                if r and r != ly_do_md:
+                    tuan_trong = False
+                    break
+            if not tuan_trong:
+                break
+        for d in hoc_sinh.values():
+            w = d.get("weeks", {}).get(t)
+            if not w:
+                continue
+            att = w.get("attendance", {})
+            rea = w.get("reasons", {})
+            for day in THU:
+                if att.get(day, False):
+                    continue
+                r = (rea.get(day, "") or "").strip()
+                if r == ly_do_md and (tuan_trong or day in NGAY_KHONG_HOC):
+                    rea[day] = ""
+                    n_fix += 1
+    return n_fix
+
+
+def _tuan_rong(w):
+    """True nếu tuần không có dữ liệu gì (không cần lưu lên GitHub)."""
+    if not isinstance(w, dict):
+        return True
+    if any(w.get("attendance", {}).values()):
+        return False
+    for key in ("reasons", "errors"):
+        if any((v or "").strip() for v in w.get(key, {}).values()):
+            return False
+    return True
+
+
+def _rut_gon_hs(info):
+    """Bản HS để ghi file: bỏ các tuần trống cho file nhỏ gọn."""
+    out = dict(info)
+    out["weeks"] = {t: w for t, w in info.get("weeks", {}).items()
+                    if not _tuan_rong(w)}
+    return out
+
+
 def ten_hoc_ky(tuan):
     return "Học kỳ 1" if tuan <= TUAN_HK1 else "Học kỳ 2"
 
-def _chuan_hoa_tuan(w):
+def _get_weeks_for_period(period):
+    """
+    Trả list tuần tương ứng với period.
+    Với month_N: nếu không có tuần nào trong khoảng → trả [] (caller tự xử).
+    """
+    if period == "year":
+        return list(range(1, TONG_TUAN + 1))
+    if period == "hk1":
+        return list(range(1, min(TUAN_HK1, TONG_TUAN) + 1))
+    if period == "hk2":
+        return list(range(TUAN_HK1 + 1, TONG_TUAN + 1))
+    if period.startswith("month_"):
+        try:
+            m = int(period.split("_")[1])
+        except (ValueError, IndexError):
+            return list(range(1, TONG_TUAN + 1))
+        start = (m - 1) * 4 + 1
+        end   = min(m * 4, TONG_TUAN)
+        if start > TONG_TUAN:
+            return []                       # ← tháng vượt phạm vi
+        return list(range(start, end + 1))
+    return list(range(1, TONG_TUAN + 1))
+
+
+def _period_available(period) -> bool:
+    """True nếu period có ít nhất 1 tuần dữ liệu."""
+    return len(_get_weeks_for_period(period)) > 0
+
+
+def _period_label(period):
+    """Label tiếng Việt cho period."""
+    if period == "year": return "CẢ NĂM"
+    if period == "hk1":  return "HỌC KỲ 1"
+    if period == "hk2":  return "HỌC KỲ 2"
+    if period.startswith("month_"):
+        return f"THÁNG {period.split('_')[1]}"
+    return "CẢ NĂM"
+
+
+def _period_suffix(period):
+    """Suffix cho tên file."""
+    if period == "year": return "ca_nam"
+    if period == "hk1":  return "hoc_ky_1"
+    if period == "hk2":  return "hoc_ky_2"
+    if period.startswith("month_"):
+        return f"thang_{period.split('_')[1]}"
+    return "ca_nam"
+
+# ═══════════════════════════════════════════════════════════════
+# STATS — TÍNH TOÁN DÙNG CHUNG
+# ═══════════════════════════════════════════════════════════════
+from typing import Any
+
+def compute_stats(hoc_sinh: dict, weeks: list[int],
+                   ly_do_md: str) -> dict[str, Any]:
+    """
+    Tính toàn bộ thống kê chuyên cần cho 1 tập tuần.
+
+    Trả về:
+      {
+        "hs_order":     list[int],            # mã HS đã sort theo tên
+        "hs_rows":      list[dict],           # {ma, name, class, to,
+                                              #  cm, vp, vkp, loi, total, rate}
+        "week_data":    list[tuple[int,float]],   # (tuần, tỉ lệ %)
+        "err_week_data": list[tuple[int,float]],  # (tuần, % HS có lỗi)
+        "class_data":   list[tuple[str,float,int,int]],  # (lớp, rate, cm, total)
+        "totals": {"cm": int, "vp": int, "vkp": int, "loi": int,
+                   "total": int, "rate": float},
+      }
+    """
+    hs_order = sorted(hoc_sinh.keys(),
+                      key=lambda m: hoc_sinh[m]["name"].lower())
+    n_hs = len(hs_order) if hs_order else 1
+
+    hs_rows: list[dict] = []
+    all_cm = all_vp = all_vkp = all_loi = 0
+
+    for ma in hs_order:
+        d = hoc_sinh[ma]
+        n_cm = n_vp = n_vkp = n_loi = 0
+        for t in weeks:
+            w = d.get("weeks", {}).get(t) or {}
+            att = w.get("attendance", {})
+            rea = w.get("reasons", {})
+            err = w.get("errors", {})
+            for day in THU:
+                loai = phan_loai_o(att.get(day, False),
+                                   rea.get(day, ""), ly_do_md)
+                if loai == "cm":
+                    n_cm += 1
+                elif loai == "vp":
+                    n_vp += 1
+                elif loai == "vkp":
+                    n_vkp += 1
+                if (err.get(day, "") or "").strip():
+                    n_loi += 1
+        tt = n_cm + n_vp + n_vkp
+        rate = (n_cm / tt * 100) if tt else 0
+        hs_rows.append({
+            "ma": ma, "name": d["name"], "class": d["class"],
+            "to": d.get("to", "") or "—",
+            "cm": n_cm, "vp": n_vp, "vkp": n_vkp,
+            "loi": n_loi, "total": tt, "rate": rate,
+        })
+        all_cm += n_cm; all_vp += n_vp
+        all_vkp += n_vkp; all_loi += n_loi
+
+    total_all = all_cm + all_vp + all_vkp
+    rate_all = (all_cm / total_all * 100) if total_all else 0
+
+    # ── Theo tuần ──
+    week_data: list[tuple[int, float]] = []
+    err_week_data: list[tuple[int, float]] = []
+    for t in weeks:
+        t_cm = t_vp = t_vkp = 0
+        n_err_hs = 0
+        for ma in hs_order:
+            w = hoc_sinh[ma].get("weeks", {}).get(t) or {}
+            att = w.get("attendance", {})
+            rea = w.get("reasons", {})
+            err = w.get("errors", {})
+            for day in THU:
+                loai = phan_loai_o(att.get(day, False),
+                                   rea.get(day, ""), ly_do_md)
+                if loai == "cm":
+                    t_cm += 1
+                elif loai == "vp":
+                    t_vp += 1
+                elif loai == "vkp":
+                    t_vkp += 1
+            if any((err.get(day, "") or "").strip() for day in THU):
+                n_err_hs += 1
+        tt = t_cm + t_vp + t_vkp
+        week_data.append((t, (t_cm / tt * 100) if tt else 0))
+        err_week_data.append((t, n_err_hs / n_hs * 100))
+
+    # ── Theo lớp ──
+    class_stats: dict[str, list[int]] = {}
+    for ma in hs_order:
+        d = hoc_sinh[ma]
+        cls = d.get("class", "") or "(Không lớp)"
+        arr = class_stats.setdefault(cls, [0, 0, 0])
+        for t in weeks:
+            w = d.get("weeks", {}).get(t) or {}
+            att = w.get("attendance", {})
+            rea = w.get("reasons", {})
+            for day in THU:
+                loai = phan_loai_o(att.get(day, False),
+                                   rea.get(day, ""), ly_do_md)
+                if loai == "cm":
+                    arr[0] += 1
+                elif loai == "vp":
+                    arr[1] += 1
+                elif loai == "vkp":
+                    arr[2] += 1
+    class_data: list[tuple[str, float, int, int]] = []
+    for cls, (p, e, a) in class_stats.items():
+        tt = p + e + a
+        class_data.append((cls, (p / tt * 100) if tt else 0, p, tt))
+    class_data.sort(key=lambda x: -x[1])
+
+    # ── Theo lớp (chi tiết) ──
+    by_class: dict[str, list[int]] = {}
+    for h in hs_rows:
+        cls = h["class"] or "(Không lớp)"
+        arr = by_class.setdefault(cls, [0, 0, 0, 0])
+        arr[0] += h["cm"]
+        arr[1] += h["vp"]
+        arr[2] += h["vkp"]
+        arr[3] += 1
+
+    return {
+        "hs_order":      hs_order,
+        "hs_rows":       hs_rows,
+        "week_data":     week_data,
+        "err_week_data": err_week_data,
+        "class_data":    class_data,
+        "by_class":      by_class,
+        "totals": {
+            "cm": all_cm, "vp": all_vp, "vkp": all_vkp,
+            "loi": all_loi, "total": total_all, "rate": rate_all,
+        },
+    }
+
+def _chuan_hoa_tuan(w: Any) -> dict:
     if not isinstance(w, dict):
         w = {}
     att = w.get("attendance")
@@ -939,7 +1438,7 @@ def validate_hs_info(info):
 # ═══════════════════════════════════════════════════════════════
 # LOAD / SAVE
 # ═══════════════════════════════════════════════════════════════
-def _object_pairs_hook_clean(pairs, warnings=None):
+def _object_pairs_hook_clean(pairs: list, warnings: Optional[list] = None) -> dict:
     seen = {}
     for k, v in pairs:
         if k in seen:
@@ -951,7 +1450,7 @@ def _object_pairs_hook_clean(pairs, warnings=None):
     return seen
 
 
-def _backup_file(path, keep=5):
+def _backup_file(path: str, keep: int = 5) -> None:
     """Backup file với timestamp. Giữ N bản mới nhất."""
     if not os.path.exists(path):
         return
@@ -968,12 +1467,14 @@ def _backup_file(path, keep=5):
             key=os.path.getmtime
         )
         for old in baks[:-keep]:
-            try: os.remove(old)
-            except Exception: pass
+            try:
+                os.remove(old)
+            except OSError as e:
+                log_warn(f"Không xoá được backup cũ {old}: {e}")
     except Exception as e:
         log_warn(f"Backup thất bại: {e}")
 
-def _build_xlsx_all(hoc_sinh, path, ly_do_md):
+def _build_xlsx_all(hoc_sinh, path, ly_do_md, period="year"):
     """
     Xuất toàn bộ các tuần vào 1 file .xlsx (openpyxl).
     Sheet 1: Tổng hợp — Sheet 2..N: mỗi tuần 1 sheet.
@@ -982,8 +1483,10 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
     if not OPENPYXL_OK:
         return False
     try:
+        WEEKS = _get_weeks_for_period(period)
+        P_LABEL = _period_label(period)
         wb = Workbook()
-        wb.remove(wb.active)   # xóa sheet mặc định
+        wb.remove(wb.active)
 
         # ── Styles dùng chung ──
         thin = Side(border_style="thin", color="999999")
@@ -999,9 +1502,13 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         fill_vkp = PatternFill("solid", fgColor="FFC7CE")
         fill_err = PatternFill("solid", fgColor="FFD4A3")
 
-        # Danh sách HS sort theo tên
-        hs_order = sorted(hoc_sinh.keys(),
-                          key=lambda m: hoc_sinh[m]["name"].lower())
+        # ── Dùng compute_stats dùng chung ──
+        # stats_year: dùng cho sheet Tổng hợp (cả năm)
+        # stats_period: dùng cho sheet _data_charts (đúng số tuần theo period)
+        if not WEEKS:
+            WEEKS = list(range(1, TONG_TUAN + 1))
+        stats_year = compute_stats(hoc_sinh, WEEKS, ly_do_md)
+        hs_order = stats_year["hs_order"]
 
         # ══════════════════════════════════════════════════
         # SHEET 1 — TỔNG HỢP CẢ NĂM
@@ -1011,13 +1518,13 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
                        "Có mặt", "Vắng phép", "Vắng KP", "Lỗi", "Tỉ lệ"]
         ncol = len(sum_headers)
 
-        ws_sum["A1"] = "BẢNG TỔNG HỢP CHUYÊN CẦN CẢ NĂM"
+        ws_sum["A1"] = f"BẢNG TỔNG HỢP CHUYÊN CẦN — {P_LABEL}"
         ws_sum["A1"].font = Font(bold=True, size=14, color="1F3864")
         ws_sum["A1"].alignment = Alignment(horizontal="center")
 
         ws_sum["A2"] = (f"Ngày xuất: "
                         f"{datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                        f"  ·  Tổng số tuần: {TONG_TUAN}"
+                        f"  ·  Tổng số tuần: {len(WEEKS)}"
                         f"  ·  {len(hoc_sinh)} học sinh")
         ws_sum["A2"].font = Font(italic=True, color="666666")
         ws_sum["A2"].alignment = Alignment(horizontal="center")
@@ -1033,45 +1540,27 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
             c.fill = header_fill; c.font = header_font
             c.alignment = center; c.border = border
 
-        tong_cm = tong_vp = tong_vkp = tong_loi = 0
-        row_i = hdr_row + 1
-        for stt, ma in enumerate(hs_order, 1):
-            d = hoc_sinh[ma]
-            n_cm = n_vp = n_vkp = n_loi = 0
-            for t in range(1, TONG_TUAN + 1):
-                w = d.get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                err = w.get("errors", {})
-                for day in THU:
-                    if att.get(day, False):
-                        n_cm += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md:
-                            n_vp += 1
-                        else:
-                            n_vkp += 1
-                    if (err.get(day, "") or "").strip():
-                        n_loi += 1
-            total = n_cm + n_vp + n_vkp
-            rate = (n_cm / total * 100) if total else 0
+        tong_cm  = stats_year["totals"]["cm"]
+        tong_vp  = stats_year["totals"]["vp"]
+        tong_vkp = stats_year["totals"]["vkp"]
+        tong_loi = stats_year["totals"]["loi"]
 
-            vals = [stt, ma, d["name"], d["class"],
-                    d.get("to", "") or "—",
-                    n_cm, n_vp, n_vkp, n_loi, f"{rate:.1f}%"]
+        row_i = hdr_row + 1
+        for stt, r in enumerate(stats_year["hs_rows"], 1):
+            vals = [stt, r["ma"], r["name"], r["class"], r["to"],
+                    r["cm"], r["vp"], r["vkp"], r["loi"],
+                    f"{r['rate']:.1f}%"]
             for col, val in enumerate(vals, 1):
                 c = ws_sum.cell(row=row_i, column=col, value=val)
                 c.border = border
                 c.alignment = left if col == 3 else center
 
-            # Tô màu cột tỉ lệ
-            if rate >= 90:   ws_sum.cell(row=row_i, column=10).fill = fill_cm
-            elif rate >= 75: ws_sum.cell(row=row_i, column=10).fill = fill_vp
-            else:            ws_sum.cell(row=row_i, column=10).fill = fill_vkp
-
-            tong_cm += n_cm; tong_vp += n_vp
-            tong_vkp += n_vkp; tong_loi += n_loi
+            if r["rate"] >= 90:
+                ws_sum.cell(row=row_i, column=10).fill = fill_cm
+            elif r["rate"] >= 75:
+                ws_sum.cell(row=row_i, column=10).fill = fill_vp
+            else:
+                ws_sum.cell(row=row_i, column=10).fill = fill_vkp
             row_i += 1
 
         # Dòng tổng
@@ -1100,7 +1589,7 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         first_ky_col = 6
         last_ky_col  = 5 + len(THU)
 
-        for tuan in range(1, TONG_TUAN + 1):
+        for tuan in WEEKS:
             ws = wb.create_sheet(f"Tuần {tuan}")
 
             ws["A1"] = f"BẢNG ĐIỂM DANH — TUẦN {tuan}"
@@ -1133,14 +1622,16 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
                 n_cm = n_vp = n_vkp = n_loi = 0
                 ky_list = []
                 for day in THU:
-                    if att.get(day, False):
+                    loai = phan_loai_o(att.get(day, False),
+                                       rea.get(day, ""), ly_do_md)
+                    if loai == "cm":
                         base = "✓"; n_cm += 1
+                    elif loai == "vp":
+                        base = "✗"; n_vp += 1
+                    elif loai == "vkp":
+                        base = "⊘"; n_vkp += 1
                     else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md:
-                            base = "✗"; n_vp += 1
-                        else:
-                            base = "⊘"; n_vkp += 1
+                        base = "·"
                     if (err.get(day, "") or "").strip():
                         base += "!"; n_loi += 1
                     ky_list.append(base)
@@ -1159,7 +1650,9 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
                         if ky.startswith("✓"):   c.fill = fill_cm
                         elif ky.startswith("✗"): c.fill = fill_vp
                         elif ky.startswith("⊘"): c.fill = fill_vkp
-                        elif ky.startswith("!"): c.fill = fill_err
+                        if "!" in ky:
+                            c.fill = fill_err
+                            c.font = Font(bold=True, color="C2410C")
 
                 tong_cm += n_cm; tong_vp += n_vp
                 tong_vkp += n_vkp; tong_loi += n_loi
@@ -1186,74 +1679,26 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         # ══════════════════════════════════════════════════
         ws_data = wb.create_sheet("_data_charts")
 
-        # ── TÍNH DATA ──
-        week_rates = []
-        for tuan in range(1, TONG_TUAN + 1):
-            t_cm = t_vp = t_vkp = 0
-            for ma in hs_order:
-                w = hoc_sinh[ma].get("weeks", {}).get(tuan) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                for day in THU:
-                    if att.get(day, False):
-                        t_cm += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md:
-                            t_vp += 1
-                        else:
-                            t_vkp += 1
-            tt = t_cm + t_vp + t_vkp
-            week_rates.append((t_cm / tt * 100) if tt else 0)
-
-        all_cm = all_vp = all_vkp = 0
-        for ma in hs_order:
-            d = hoc_sinh[ma]
-            for t in range(1, TONG_TUAN + 1):
-                w = d.get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                for day in THU:
-                    if att.get(day, False):
-                        all_cm += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md:
-                            all_vp += 1
-                        else:
-                            all_vkp += 1
-
-        class_stats = {}
-        for ma in hs_order:
-            d = hoc_sinh[ma]
-            cls = d.get("class", "") or "(Không lớp)"
-            arr = class_stats.setdefault(cls, [0, 0, 0])
-            for t in range(1, TONG_TUAN + 1):
-                w = d.get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                for day in THU:
-                    if att.get(day, False):
-                        arr[0] += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md:
-                            arr[1] += 1
-                        else:
-                            arr[2] += 1
-        class_items = []
-        for cls, (p, e, a) in class_stats.items():
-            tt = p + e + a
-            rate = (p / tt * 100) if tt else 0
-            class_items.append((cls, rate))
-        class_items.sort(key=lambda x: -x[1])
+        # ── Dùng dữ liệu đã tính sẵn ──
+        # Nếu period == year → tái sử dụng stats_year (tránh tính lại)
+        if list(WEEKS) == list(range(1, TONG_TUAN + 1)):
+            stats_wk = stats_year
+        else:
+            stats_wk = compute_stats(hoc_sinh, WEEKS, ly_do_md)
+        week_rates = [rate for _t, rate in stats_wk["week_data"]]
+        all_cm  = stats_wk["totals"]["cm"]
+        all_vp  = stats_wk["totals"]["vp"]
+        all_vkp = stats_wk["totals"]["vkp"]
+        class_items = [(cls, rate) for cls, rate, _p, _tt
+                       in stats_wk["class_data"]]
 
         # ── GHI DATA VÀO SHEET ẨN ──
         # Cột A, B: theo tuần
         ws_data["A1"] = "Tuần"
         ws_data["B1"] = "Tỉ lệ (%)"
         for i, rate in enumerate(week_rates, 1):
-            ws_data.cell(row=1 + i, column=1, value=f"T{i}")
+            tuan_label = WEEKS[i - 1] if i - 1 < len(WEEKS) else i
+            ws_data.cell(row=1 + i, column=1, value=f"T{tuan_label}")
             ws_data.cell(row=1 + i, column=2, value=round(rate, 2))
 
         # Cột D, E: tổng quan
@@ -1275,20 +1720,12 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
             ws_data.cell(row=1 + i, column=8, value=round(rate, 2))
         # Cột J: mốc 90% (dùng cho reference line)
         ws_data["J1"] = "Mốc 90%"
-        for i in range(1, TONG_TUAN + 1):
-            ws_data.cell(row=1 + i, column=10, value=90)
+        for idx, _t in enumerate(WEEKS, 1):
+            ws_data.cell(row=1 + idx, column=10, value=90)
         # Cột L: Tỉ lệ HS có lỗi theo tuần
         ws_data["L1"] = "Tỉ lệ HS có lỗi (%)"
-        n_hs_total = len(hs_order) if hs_order else 1
-        for tuan in range(1, TONG_TUAN + 1):
-            n_err_hs = 0
-            for ma in hs_order:
-                w = hoc_sinh[ma].get("weeks", {}).get(tuan) or {}
-                err = w.get("errors", {})
-                if any((err.get(day, "") or "").strip() for day in THU):
-                    n_err_hs += 1
-            rate_err = n_err_hs / n_hs_total * 100
-            ws_data.cell(row=1 + tuan, column=12,
+        for idx, (_t, rate_err) in enumerate(stats_wk["err_week_data"], 1):
+            ws_data.cell(row=1 + idx, column=12,
                          value=round(rate_err, 2))
 
         # Ẩn sheet này đi
@@ -1299,7 +1736,7 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         # ══════════════════════════════════════════════════
         ws_chart = wb.create_sheet("Biểu đồ")
 
-        ws_chart["A1"] = "BIỂU ĐỒ CHUYÊN CẦN CẢ NĂM"
+        ws_chart["A1"] = f"BIỂU ĐỒ CHUYÊN CẦN — {P_LABEL}"
         ws_chart["A1"].font = Font(bold=True, size=16, color="1F3864")
         ws_chart["A1"].alignment = Alignment(horizontal="center")
         ws_chart.merge_cells("A1:P1")
@@ -1319,15 +1756,17 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         line.x_axis.minorTickMark = "none"
         line.height = 10
         line.width = 22
+        line.x_axis.delete = False
+        line.y_axis.delete = False
 
         line_data = Reference(
             ws_data,
             min_col=2, max_col=2,
-            min_row=1, max_row=1 + TONG_TUAN)
+            min_row=1, max_row=1 + len(WEEKS))
         line_cats = Reference(
             ws_data,
             min_col=1, max_col=1,
-            min_row=2, max_row=1 + TONG_TUAN)
+            min_row=2, max_row=1 + len(WEEKS))
 
         s_line = Series(line_data, title_from_data=True)
 
@@ -1348,13 +1787,13 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         # ── Đường mốc 90% (reference line) ──
         # Thêm 1 series phụ, tất cả điểm = 90%
         try:
-            ref_data_rows = []
-            for i in range(1, TONG_TUAN + 1):
-                ws_data.cell(row=1 + i, column=10, value=90)   # cột J
+            # Ghi mốc 90% cho đúng số tuần (rows 2..N+1)
+            for i in range(1, len(WEEKS) + 1):
+                ws_data.cell(row=1 + i, column=10, value=90)
             ref_data = Reference(
                 ws_data,
                 min_col=10, max_col=10,
-                min_row=1, max_row=1 + TONG_TUAN)
+                min_row=2, max_row=1 + len(WEEKS))   # ← bỏ header
             s_ref = Series(ref_data, title="Mốc 90%")
             s_ref.graphicalProperties = GraphicalProperties()
             s_ref.graphicalProperties.line = LineProperties(
@@ -1407,6 +1846,8 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         bar.x_axis.title = "Lớp"
         bar.height = 10
         bar.width = 16
+        bar.x_axis.delete = False
+        bar.y_axis.delete = False
         bar.gapWidth = 40
 
         b_data = Reference(
@@ -1440,17 +1881,19 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         err_chart.x_axis.title = "Tuần"
         err_chart.height = 10
         err_chart.width = 22
+        err_chart.x_axis.delete = False
+        err_chart.y_axis.delete = False
         err_chart.gapWidth = 20
         err_chart.legend = None   # ẩn legend — chỉ 1 series
 
         err_data = Reference(
             ws_data,
             min_col=12, max_col=12,
-            min_row=1, max_row=1 + TONG_TUAN)
+            min_row=1, max_row=1 + len(WEEKS))
         err_cats = Reference(
             ws_data,
             min_col=1, max_col=1,
-            min_row=2, max_row=1 + TONG_TUAN)
+            min_row=2, max_row=1 + len(WEEKS))
 
         s_err = Series(err_data, title_from_data=True)
 
@@ -1485,9 +1928,11 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md):
         log_error(f"Xuất xlsx-all fail: {e}\n{traceback.format_exc()}")
         return False
 
-def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
+def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False, period=None):
     """
-    Xuất báo cáo HTML. Nếu tuan=None → cả năm. Chạy trong thread.
+    Xuất báo cáo HTML. Chạy trong thread.
+    - tuan: nếu có → xuất riêng 1 tuần
+    - period: "year" | "hk1" | "hk2" | "month_N" → xuất theo kỳ
     Trả True nếu OK.
     """
     try:
@@ -1496,35 +1941,23 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
                            .replace("<", "&lt;")
                            .replace(">", "&gt;"))
 
-        hs_order = sorted(hoc_sinh.keys(),
-                          key=lambda m: hoc_sinh[m]["name"].lower())
+        if period:
+            WEEKS = _get_weeks_for_period(period)
+        else:
+            WEEKS = list(range(1, TONG_TUAN + 1))
+        if not WEEKS:
+            WEEKS = list(range(1, TONG_TUAN + 1))
 
-        # ── Tính toán ──
-        def tinh(hs_d, tuan_filter=None):
-            n_cm = n_vp = n_vkp = n_loi = 0
-            weeks = range(1, TONG_TUAN + 1) if tuan_filter is None else [tuan_filter]
-            for t in weeks:
-                w = hs_d.get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                err = w.get("errors", {})
-                for day in THU:
-                    if att.get(day, False):
-                        n_cm += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md:
-                            n_vp += 1
-                        else:
-                            n_vkp += 1
-                    if (err.get(day, "") or "").strip():
-                        n_loi += 1
-            total = n_cm + n_vp + n_vkp
-            rate = (n_cm / total * 100) if total else 0
-            return n_cm, n_vp, n_vkp, n_loi, rate
+        weeks_used = [tuan] if tuan else WEEKS
+        stats = compute_stats(hoc_sinh, weeks_used, ly_do_md)
+        hs_order = stats["hs_order"]
 
-        title = (f"BÁO CÁO CHUYÊN CẦN — TUẦN {tuan}"
-                 if tuan else "BÁO CÁO CHUYÊN CẦN CẢ NĂM")
+        if tuan:
+            title = f"BÁO CÁO CHUYÊN CẦN — TUẦN {tuan}"
+        elif period:
+            title = f"BÁO CÁO CHUYÊN CẦN — {_period_label(period)}"
+        else:
+            title = "BÁO CÁO CHUYÊN CẦN CẢ NĂM"
 
         parts = []
         if for_word:
@@ -1607,25 +2040,21 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
         parts.append(f'<div class="meta">Ngày xuất: '
                      f'{datetime.now().strftime("%d/%m/%Y %H:%M")} '
                      f'· {len(hoc_sinh)} học sinh '
-                     f'· {TONG_TUAN} tuần</div>')
+                     f'· {len(WEEKS)} tuần</div>')
 
-        # ── Tổng quan ──
-        all_cm = all_vp = all_vkp = all_loi = 0
-        rows = []
-        for ma in hs_order:
-            d = hoc_sinh[ma]
-            n_cm, n_vp, n_vkp, n_loi, rate = tinh(d, tuan)
-            rows.append({
-                "ma": ma, "name": d["name"], "class": d["class"],
-                "to": d.get("to", "") or "—",
-                "cm": n_cm, "vp": n_vp, "vkp": n_vkp,
-                "loi": n_loi, "rate": rate,
-            })
-            all_cm += n_cm; all_vp += n_vp
-            all_vkp += n_vkp; all_loi += n_loi
+        # ── Tổng quan (dùng stats) ──
+        all_cm   = stats["totals"]["cm"]
+        all_vp   = stats["totals"]["vp"]
+        all_vkp  = stats["totals"]["vkp"]
+        all_loi  = stats["totals"]["loi"]
+        total_all = stats["totals"]["total"]
+        rate_all  = stats["totals"]["rate"]
 
-        total_all = all_cm + all_vp + all_vkp
-        rate_all = (all_cm / total_all * 100) if total_all else 0
+        rows = [{
+            "ma": h["ma"], "name": h["name"], "class": h["class"],
+            "to": h["to"], "cm": h["cm"], "vp": h["vp"],
+            "vkp": h["vkp"], "loi": h["loi"], "rate": h["rate"],
+        } for h in stats["hs_rows"]]
 
         parts.append('<div class="summary-box">')
         for label, value in [
@@ -1676,6 +2105,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
             ("⊘ Không phép",   all_vkp, "#EF4444"),
         ]:
             pct = (value / total_all * 100) if total_all else 0
+            val_str = f"{value:,}".replace(",", ".")
             parts.append(
                 f'<div style="display:flex;align-items:center;'
                 f'padding:12px 16px;background:#f8fafc;'
@@ -1685,7 +2115,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
                 f'{label}</div>'
                 f'<div style="font-family:Consolas,monospace;'
                 f'color:#666;margin-right:20px;font-size:13px">'
-                f'{value:,} buổi</div>'.replace(",", ".") +
+                f'{val_str} buổi</div>'
                 f'<div style="font-weight:700;color:{color};'
                 f'font-size:18px;min-width:70px;text-align:right">'
                 f'{pct:.1f}%</div>'
@@ -1694,25 +2124,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
         parts.append('</div>')
 
         # ── Line chart theo tuần ──
-        week_pts = []
-        for tuan_i in range(1, TONG_TUAN + 1):
-            t_cm = t_vp = t_vkp = 0
-            for ma_i in hs_order:
-                w_i = hoc_sinh[ma_i].get("weeks", {}).get(tuan_i) or {}
-                att_i = w_i.get("attendance", {})
-                rea_i = w_i.get("reasons", {})
-                for day_i in THU:
-                    if att_i.get(day_i, False):
-                        t_cm += 1
-                    else:
-                        r_i = (rea_i.get(day_i, "") or "").strip()
-                        if r_i and r_i != ly_do_md:
-                            t_vp += 1
-                        else:
-                            t_vkp += 1
-            tt_i = t_cm + t_vp + t_vkp
-            rate_i = (t_cm / tt_i * 100) if tt_i else 0
-            week_pts.append((f"T{tuan_i}", rate_i))
+        week_pts = [(f"T{t}", r) for t, r in stats["week_data"]]
 
         line_svg = _svg_line_chart(week_pts, width=900, height=280)
 
@@ -1724,34 +2136,12 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
                      f'{line_svg}</div>')
 
         # ── Bar chart theo lớp ──
-        class_stats_html = {}
-        for ma_i in hs_order:
-            d_i = hoc_sinh[ma_i]
-            cls_i = d_i.get("class", "") or "(Không lớp)"
-            arr_i = class_stats_html.setdefault(cls_i, [0, 0, 0])
-            for t_i in range(1, TONG_TUAN + 1):
-                w_i = d_i.get("weeks", {}).get(t_i) or {}
-                att_i = w_i.get("attendance", {})
-                rea_i = w_i.get("reasons", {})
-                for day_i in THU:
-                    if att_i.get(day_i, False):
-                        arr_i[0] += 1
-                    else:
-                        r_i = (rea_i.get(day_i, "") or "").strip()
-                        if r_i and r_i != ly_do_md:
-                            arr_i[1] += 1
-                        else:
-                            arr_i[2] += 1
-
         class_bars = []
-        for cls_i, (p_i, e_i, a_i) in class_stats_html.items():
-            tt_i = p_i + e_i + a_i
-            rate_i = (p_i / tt_i * 100) if tt_i else 0
+        for cls_i, rate_i, _p_i, _tt_i in stats["class_data"]:
             if rate_i >= 90:   c_i = "#22C55E"
             elif rate_i >= 75: c_i = "#EAB308"
             else:              c_i = "#EF4444"
             class_bars.append((cls_i, rate_i, c_i))
-        class_bars.sort(key=lambda x: -x[1])
 
         bar_svg = _svg_bar_chart(class_bars, width=900, row_h=32)
 
@@ -1763,18 +2153,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
                      f'{bar_svg}</div>')
 
         # ── Bar chart tỉ lệ HS có lỗi theo tuần ──
-        n_hs_total_html = len(hs_order) if hs_order else 1
-        err_pts = []
-        for tuan_i in range(1, TONG_TUAN + 1):
-            n_err_hs = 0
-            for ma_i in hs_order:
-                w_i = hoc_sinh[ma_i].get("weeks", {}).get(tuan_i) or {}
-                err_i = w_i.get("errors", {})
-                if any((err_i.get(day_i, "") or "").strip()
-                       for day_i in THU):
-                    n_err_hs += 1
-            rate_i = n_err_hs / n_hs_total_html * 100
-            err_pts.append((f"T{tuan_i}", rate_i))
+        err_pts = [(f"T{t}", r) for t, r in stats["err_week_data"]]
 
         err_svg = _svg_bar_chart_vertical(
             err_pts, width=900, height=280,
@@ -1820,7 +2199,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
         parts.append('</table>')
 
         parts.append('<div class="footer">'
-                     'Hệ Thống Quản Lý Học Sinh v2.3 — '
+                     'Hệ Thống Quản Lý Học Sinh v2.4 — '
                      'in bằng Ctrl+P hoặc nút phía trên</div>')
         parts.append('</div></body></html>')
 
@@ -1832,110 +2211,40 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False):
         log_error(f"Xuất HTML fail: {e}\n{traceback.format_exc()}")
         return False
 
-def _build_word_report(hoc_sinh, path, ly_do_md):
+def _build_word_report(hoc_sinh, path, ly_do_md, period="year"):
     """
     Xuất báo cáo Word (.doc) — dùng HTML tables thay vì SVG.
     Word KHÔNG render inline SVG đúng (text dồn về góc), nên biểu đồ
     được vẽ bằng table với ô bgcolor.
     """
     try:
+        WEEKS = _get_weeks_for_period(period)
+        P_LABEL = _period_label(period)
+
         def esc(s):
             return (str(s).replace("&", "&amp;")
                            .replace("<", "&lt;")
                            .replace(">", "&gt;"))
-
-        hs_order = sorted(hoc_sinh.keys(),
-                          key=lambda m: hoc_sinh[m]["name"].lower())
 
         def color_of(rate):
             if rate >= 90:   return "#C6EFCE", "#1a5c1a"
             elif rate >= 75: return "#FFEB9C", "#7a5a00"
             else:            return "#FFC7CE", "#8b1a2a"
 
-        # ── Tính dữ liệu ──
-        rows = []
-        all_cm = all_vp = all_vkp = all_loi = 0
-        for ma in hs_order:
-            d = hoc_sinh[ma]
-            n_cm = n_vp = n_vkp = n_loi = 0
-            for t in range(1, TONG_TUAN + 1):
-                w = d.get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                err = w.get("errors", {})
-                for day in THU:
-                    if att.get(day, False):
-                        n_cm += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md: n_vp += 1
-                        else: n_vkp += 1
-                    if (err.get(day, "") or "").strip():
-                        n_loi += 1
-            total = n_cm + n_vp + n_vkp
-            rate = (n_cm / total * 100) if total else 0
-            rows.append({
-                "ma": ma, "name": d["name"], "class": d["class"],
-                "to": d.get("to", "") or "—",
-                "cm": n_cm, "vp": n_vp, "vkp": n_vkp,
-                "loi": n_loi, "rate": rate,
-            })
-            all_cm += n_cm; all_vp += n_vp
-            all_vkp += n_vkp; all_loi += n_loi
-
-        total_all = all_cm + all_vp + all_vkp
-        rate_all = (all_cm / total_all * 100) if total_all else 0
-
-        # Theo tuần
-        week_data = []
-        for t in range(1, TONG_TUAN + 1):
-            t_cm = t_vp = t_vkp = 0
-            for ma in hs_order:
-                w = hoc_sinh[ma].get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                for day in THU:
-                    if att.get(day, False): t_cm += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md: t_vp += 1
-                        else: t_vkp += 1
-            tt = t_cm + t_vp + t_vkp
-            week_data.append((t, (t_cm / tt * 100) if tt else 0))
-
-        # Theo lớp
-        class_stats = {}
-        for ma in hs_order:
-            d = hoc_sinh[ma]
-            cls = d.get("class", "") or "(Không lớp)"
-            arr = class_stats.setdefault(cls, [0, 0, 0])
-            for t in range(1, TONG_TUAN + 1):
-                w = d.get("weeks", {}).get(t) or {}
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                for day in THU:
-                    if att.get(day, False): arr[0] += 1
-                    else:
-                        r = (rea.get(day, "") or "").strip()
-                        if r and r != ly_do_md: arr[1] += 1
-                        else: arr[2] += 1
-        class_data = []
-        for cls, (p, e, a) in class_stats.items():
-            tt = p + e + a
-            class_data.append((cls, (p / tt * 100) if tt else 0, p, tt))
-        class_data.sort(key=lambda x: -x[1])
-
-        # Tỉ lệ HS có lỗi theo tuần
-        n_hs = len(hs_order) if hs_order else 1
-        err_data = []
-        for t in range(1, TONG_TUAN + 1):
-            n_err = 0
-            for ma in hs_order:
-                w = hoc_sinh[ma].get("weeks", {}).get(t) or {}
-                err = w.get("errors", {})
-                if any((err.get(d, "") or "").strip() for d in THU):
-                    n_err += 1
-            err_data.append((t, n_err / n_hs * 100))
+        # ── Dùng compute_stats ──
+        if not WEEKS:
+            WEEKS = list(range(1, TONG_TUAN + 1))
+        stats = compute_stats(hoc_sinh, WEEKS, ly_do_md)
+        rows       = stats["hs_rows"]
+        all_cm     = stats["totals"]["cm"]
+        all_vp     = stats["totals"]["vp"]
+        all_vkp    = stats["totals"]["vkp"]
+        all_loi    = stats["totals"]["loi"]
+        total_all  = stats["totals"]["total"]
+        rate_all   = stats["totals"]["rate"]
+        week_data  = stats["week_data"]
+        class_data = stats["class_data"]
+        err_data   = stats["err_week_data"]
 
         # ── Build HTML ──
         parts = []
@@ -1944,7 +2253,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
             'xmlns:w="urn:schemas-microsoft-com:office:word" '
             'xmlns="http://www.w3.org/TR/REC-html40">')
         parts.append('<head><meta charset="UTF-8">')
-        parts.append('<title>BÁO CÁO CHUYÊN CẦN CẢ NĂM</title>')
+        parts.append(f'<title>BÁO CÁO CHUYÊN CẦN — {P_LABEL}</title>')
         parts.append('<!--[if gte mso 9]><xml><w:WordDocument>'
                      '<w:View>Print</w:View><w:Zoom>100</w:Zoom>'
                      '</w:WordDocument></xml><![endif]-->')
@@ -1976,11 +2285,11 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
         parts.append('</style></head><body>')
 
         # Header
-        parts.append('<h1>BÁO CÁO CHUYÊN CẦN CẢ NĂM</h1>')
+        parts.append(f'<h1>BÁO CÁO CHUYÊN CẦN — {P_LABEL}</h1>')
         parts.append(f'<div class="meta">Ngày xuất: '
                      f'{datetime.now().strftime("%d/%m/%Y %H:%M")} '
                      f'&middot; {len(hoc_sinh)} học sinh '
-                     f'&middot; {TONG_TUAN} tuần</div>')
+                     f'&middot; {len(WEEKS)} tuần</div>')
 
         # Summary
         parts.append('<table class="summary-table" cellpadding="6" '
@@ -2027,7 +2336,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
 
         # ── Chuyên cần theo tuần ──
         parts.append('<h2>📈 Tỉ lệ có mặt theo tuần</h2>')
-        for chunk_start in range(0, TONG_TUAN, 10):
+        for chunk_start in range(0, len(WEEKS), 10):
             chunk = week_data[chunk_start:chunk_start + 10]
             parts.append('<table cellpadding="3" cellspacing="0" '
                          'style="width:100%;margin:4pt 0">')
@@ -2055,7 +2364,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
 
         # ── Tỉ lệ HS có lỗi theo tuần ──
         parts.append('<h2>⚠ Tỉ lệ HS có lỗi theo tuần</h2>')
-        for chunk_start in range(0, TONG_TUAN, 10):
+        for chunk_start in range(0, len(WEEKS), 10):
             chunk = err_data[chunk_start:chunk_start + 10]
             parts.append('<table cellpadding="3" cellspacing="0" '
                          'style="width:100%;margin:4pt 0">')
@@ -2118,7 +2427,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
         # Footer
         parts.append('<p style="text-align:center;color:#888;'
                      'font-size:9pt;margin-top:16pt">'
-                     'Hệ Thống Quản Lý Học Sinh v2.3 — xuất Word</p>')
+                     'Hệ Thống Quản Lý Học Sinh v2.4 — xuất Word</p>')
         parts.append('</body></html>')
 
         with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -2127,6 +2436,231 @@ def _build_word_report(hoc_sinh, path, ly_do_md):
         return True
     except Exception as e:
         log_error(f"Xuất Word fail: {e}\n{traceback.format_exc()}")
+        return False
+
+def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
+    """
+    Xuất báo cáo PDF bằng reportlab. Chạy trong thread — KHÔNG chạm Tk.
+    period: "year" | "hk1" | "hk2" | "month_1".."month_12"
+    Trả True nếu OK.
+    """
+    if not REPORTLAB_OK:
+        log_error("Chưa cài reportlab — pip install reportlab")
+        return False
+    try:
+        # ── Xác định tập tuần theo period ──
+        WEEKS = _get_weeks_for_period(period)
+        if not WEEKS:
+            log_warn(f"PDF: period '{period}' rỗng — fallback cả năm")
+            WEEKS = list(range(1, TONG_TUAN + 1))
+
+        period_label = {
+            "year": "CẢ NĂM",
+            "hk1":  "HỌC KỲ 1",
+            "hk2":  "HỌC KỲ 2",
+        }.get(period)
+        if period_label is None and period.startswith("month_"):
+            period_label = f"THÁNG {period.split('_')[1]}"
+        if period_label is None:
+            period_label = "CẢ NĂM"
+
+        # ── Styles ──
+        styles = getSampleStyleSheet()
+        st_title = ParagraphStyle(
+            "VNTitle", parent=styles["Title"],
+            fontName=_VN_FONT_BOLD, fontSize=18, textColor=rl_colors.HexColor("#1F3864"),
+            alignment=TA_CENTER, spaceAfter=6,
+        )
+        st_meta = ParagraphStyle(
+            "VNMeta", parent=styles["Normal"],
+            fontName=_VN_FONT_REG, fontSize=10, textColor=rl_colors.HexColor("#666666"),
+            alignment=TA_CENTER, spaceAfter=14,
+        )
+        st_h2 = ParagraphStyle(
+            "VNH2", parent=styles["Heading2"],
+            fontName=_VN_FONT_BOLD, fontSize=13, textColor=rl_colors.HexColor("#1F3864"),
+            spaceBefore=14, spaceAfter=8,
+        )
+        st_cell = ParagraphStyle(
+            "VMCell", parent=styles["Normal"],
+            fontName=_VN_FONT_REG, fontSize=9, alignment=TA_LEFT,
+        )
+        st_cell_c = ParagraphStyle(
+            "VMCellC", parent=styles["Normal"],
+            fontName=_VN_FONT_REG, fontSize=9, alignment=TA_CENTER,
+        )
+        st_cell_b = ParagraphStyle(
+            "VMCellB", parent=styles["Normal"],
+            fontName=_VN_FONT_BOLD, fontSize=9, alignment=TA_LEFT,
+        )
+
+        # ── Dùng compute_stats ──
+        stats = compute_stats(hoc_sinh, WEEKS, ly_do_md)
+        rows = [{
+            "ma": h["ma"], "name": h["name"], "class": h["class"],
+            "to": h["to"], "cm": h["cm"], "vp": h["vp"],
+            "vkp": h["vkp"], "loi": h["loi"],
+            "rate": h["rate"], "tt": h["total"],
+        } for h in stats["hs_rows"]]
+
+        all_cm  = stats["totals"]["cm"]
+        all_vp  = stats["totals"]["vp"]
+        all_vkp = stats["totals"]["vkp"]
+        all_loi = stats["totals"]["loi"]
+        all_tt  = stats["totals"]["total"]
+        rate_all = stats["totals"]["rate"]
+
+        # ── Build PDF ──
+        doc = SimpleDocTemplate(
+            path, pagesize=A4,
+            leftMargin=1.2 * cm, rightMargin=1.2 * cm,
+            topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+            title=f"Báo cáo chuyên cần — {period_label}",
+        )
+        story = []
+
+        # Title
+        story.append(Paragraph(f"BÁO CÁO CHUYÊN CẦN — {period_label}", st_title))
+        story.append(Paragraph(
+            f"Ngày xuất: {datetime.now().strftime('%d/%m/%Y %H:%M')} · "
+            f"{len(hoc_sinh)} học sinh · {len(WEEKS)} tuần",
+            st_meta))
+
+        # ── Summary table ──
+        summary_data = [[
+            Paragraph("Tổng buổi", st_cell_c),
+            Paragraph("Có mặt", st_cell_c),
+            Paragraph("Vắng phép", st_cell_c),
+            Paragraph("Vắng KP", st_cell_c),
+            Paragraph("Tỉ lệ chung", st_cell_c),
+        ], [
+            Paragraph(f"<b>{all_tt}</b>", st_cell_c),
+            Paragraph(f"<b>{all_cm}</b>", st_cell_c),
+            Paragraph(f"<b>{all_vp}</b>", st_cell_c),
+            Paragraph(f"<b>{all_vkp}</b>", st_cell_c),
+            Paragraph(f"<b>{rate_all:.1f}%</b>", st_cell_c),
+        ]]
+        t_sum = Table(summary_data, colWidths=[3.5 * cm] * 5)
+        t_sum.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#4472C4")),
+            ("TEXTCOLOR",  (0, 0), (-1, 0), rl_colors.white),
+            ("BACKGROUND", (0, 1), (-1, 1), rl_colors.HexColor("#F0F4FA")),
+            ("GRID",       (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#999999")),
+            ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(t_sum)
+
+        # ── Chuyên cần theo lớp ──
+        story.append(Paragraph("Chuyên cần theo lớp", st_h2))
+        class_items = stats["class_data"]
+
+        cdata = [[
+            Paragraph("<b>Lớp</b>", st_cell_c),
+            Paragraph("<b>Số buổi</b>", st_cell_c),
+            Paragraph("<b>Có mặt</b>", st_cell_c),
+            Paragraph("<b>Tỉ lệ</b>", st_cell_c),
+        ]]
+        for cls, rate, p, tt in class_items:
+            cdata.append([
+                Paragraph(xml_escape(str(cls)), st_cell_b),
+                Paragraph(str(tt), st_cell_c),
+                Paragraph(str(p), st_cell_c),
+                Paragraph(f"<b>{rate:.1f}%</b>", st_cell_c),
+            ])
+        t_cls = Table(cdata, colWidths=[5 * cm, 3 * cm, 3 * cm, 3 * cm])
+        cls_styles = [
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#4472C4")),
+            ("TEXTCOLOR",  (0, 0), (-1, 0), rl_colors.white),
+            ("GRID",       (0, 0), (-1, -1), 0.4, rl_colors.HexColor("#999999")),
+            ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]
+        for i, (_, rate, _, _) in enumerate(class_items, start=1):
+            if rate >= 90:
+                cls_styles.append(("BACKGROUND", (3, i), (3, i),
+                                    rl_colors.HexColor("#C6EFCE")))
+            elif rate >= 75:
+                cls_styles.append(("BACKGROUND", (3, i), (3, i),
+                                    rl_colors.HexColor("#FFEB9C")))
+            else:
+                cls_styles.append(("BACKGROUND", (3, i), (3, i),
+                                    rl_colors.HexColor("#FFC7CE")))
+        t_cls.setStyle(TableStyle(cls_styles))
+        story.append(t_cls)
+
+        # ── Chi tiết HS ──
+        story.append(Paragraph("Bảng chi tiết học sinh", st_h2))
+        rows_sorted = sorted(rows, key=lambda r: r["rate"])
+        hdr = [
+            Paragraph("<b>STT</b>", st_cell_c),
+            Paragraph("<b>Mã</b>", st_cell_c),
+            Paragraph("<b>Họ tên</b>", st_cell_c),
+            Paragraph("<b>Lớp</b>", st_cell_c),
+            Paragraph("<b>Tổ</b>", st_cell_c),
+            Paragraph("<b>Có mặt</b>", st_cell_c),
+            Paragraph("<b>V.P</b>", st_cell_c),
+            Paragraph("<b>V.KP</b>", st_cell_c),
+            Paragraph("<b>Lỗi</b>", st_cell_c),
+            Paragraph("<b>Tỉ lệ</b>", st_cell_c),
+        ]
+        detail_data = [hdr]
+        for stt, r in enumerate(rows_sorted, 1):
+            detail_data.append([
+                Paragraph(str(stt), st_cell_c),
+                Paragraph(str(r["ma"]), st_cell_c),
+                Paragraph(xml_escape(str(r["name"])), st_cell),
+                Paragraph(xml_escape(str(r["class"])), st_cell_c),
+                Paragraph(xml_escape(str(r["to"])), st_cell_c),
+                Paragraph(str(r["cm"]), st_cell_c),
+                Paragraph(str(r["vp"]), st_cell_c),
+                Paragraph(str(r["vkp"]), st_cell_c),
+                Paragraph(str(r["loi"]), st_cell_c),
+                Paragraph(f"<b>{r['rate']:.1f}%</b>", st_cell_c),
+            ])
+        t_det = Table(detail_data,
+                       colWidths=[1.1 * cm, 1.4 * cm, 5.5 * cm, 1.6 * cm,
+                                   1.2 * cm, 1.6 * cm, 1.3 * cm, 1.3 * cm,
+                                   1.1 * cm, 1.8 * cm],
+                       repeatRows=1)
+        det_styles = [
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#4472C4")),
+            ("TEXTCOLOR",  (0, 0), (-1, 0), rl_colors.white),
+            ("GRID",       (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#999999")),
+            ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]
+        for i, r in enumerate(rows_sorted, start=1):
+            if i % 2 == 0:
+                det_styles.append(("BACKGROUND", (0, i), (-1, i),
+                                    rl_colors.HexColor("#F5F7FA")))
+            if r["rate"] >= 90:
+                det_styles.append(("BACKGROUND", (9, i), (9, i),
+                                    rl_colors.HexColor("#C6EFCE")))
+            elif r["rate"] >= 75:
+                det_styles.append(("BACKGROUND", (9, i), (9, i),
+                                    rl_colors.HexColor("#FFEB9C")))
+            else:
+                det_styles.append(("BACKGROUND", (9, i), (9, i),
+                                    rl_colors.HexColor("#FFC7CE")))
+        t_det.setStyle(TableStyle(det_styles))
+        story.append(t_det)
+
+        # Footer
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(
+            f"Hệ Thống Quản Lý Học Sinh v{APP_VERSION} — xuất PDF",
+            ParagraphStyle("Foot", parent=st_cell_c, fontSize=8,
+                            textColor=rl_colors.HexColor("#888888"))))
+
+        doc.build(story)
+        log_info(f"✓ Xuất PDF: {path} ({period_label})")
+        return True
+    except Exception as e:
+        log_error(f"Xuất PDF fail: {e}\n{traceback.format_exc()}")
         return False
 
 def _diff_for_warning(local_data, merged_data):
@@ -2310,7 +2844,7 @@ def _svg_bar_chart(items, width=900, row_h=30):
         # Label
         svg.append(f'<text x="{label_w-8}" y="{y+row_h/2+4:.1f}" '
                    f'text-anchor="end" font-size="11" fill="#1a1a1a" '
-                   f'font-weight="600">{label}</text>')
+                   f'font-weight="600">{xml_escape(str(label))}</text>')
         # Track
         svg.append(f'<rect x="{label_w}" y="{y+6:.1f}" '
                    f'width="{bar_max}" height="{row_h-12:.1f}" '
@@ -2397,7 +2931,8 @@ def _svg_bar_chart_vertical(items, width=900, height=280,
 
 def _norm_text(s):
     """Chuẩn hóa mọi kiểu xuống dòng về \\n (LF)."""
-    return s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\r+\n", "\n", s)
+    return s.replace("\r", "\n")
 
 def _get_self_path():
     """
@@ -2487,6 +3022,17 @@ def _get_self_hash():
         return None
 
 
+def _version_tuple(v):
+    """'2.10' -> (2, 10). Không đọc được -> (0,)."""
+    parts = []
+    for p in str(v).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
 def _hash_str(s):
     return hashlib.sha256(_norm_text(s).encode("utf-8")).hexdigest()
 
@@ -2503,12 +3049,13 @@ def fetch_remote_script(timeout=20):
     if not URLLIB_OK:
         return None
     try:
-        req = urllib.request.Request(
-            UPDATE_URL,
-            headers={
-                "User-Agent": f"ManagementSystem/{APP_VERSION}",
-                "Cache-Control": "no-cache",
-            })
+        headers = {
+            "User-Agent": f"ManagementSystem/{APP_VERSION}",
+            "Cache-Control": "no-cache",
+        }
+        if GH_CONFIG and GH_CONFIG.get("token"):
+            headers["Authorization"] = f"token {GH_CONFIG['token']}"
+        req = urllib.request.Request(UPDATE_URL, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
@@ -2546,9 +3093,11 @@ def _fix_double_newlines(text):
     cleaned = _re.sub(r"\n{4,}", "\n\n\n", cleaned)
     return cleaned
 
-def doc_file(HocSinh, filename=DATA_FILE):
+def doc_file(HocSinh: dict, filename: str = DATA_FILE) -> tuple[int, list[str]]:
     """Load data — ưu tiên GitHub, fallback local.
     Trả về (số_hs, warnings_list)."""
+    global LOADED_FROM_REMOTE
+    LOADED_FROM_REMOTE = False
     warnings = []
     content  = None
 
@@ -2557,7 +3106,14 @@ def doc_file(HocSinh, filename=DATA_FILE):
         gh = github_fetch(GH_CONFIG)
         if gh:
             content = gh
+            LOADED_FROM_REMOTE = True
             try:
+                old_local = None
+                if os.path.exists(filename):
+                    with open(filename, "r", encoding="utf-8") as f:
+                        old_local = f.read()
+                if old_local is not None and old_local.strip() != content.strip():
+                    _backup_file(filename, keep=5)
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(content)
                 log_info("✓ Đã đồng bộ từ GitHub")
@@ -2604,6 +3160,11 @@ def doc_file(HocSinh, filename=DATA_FILE):
     # Migrate + validate
     bad_count = 0
     for sid_str, info in raw.items():
+        if sid_str == "_meta":
+            continue
+        if not isinstance(info, dict):
+            bad_count += 1
+            continue
         try:
             sid = int(sid_str)
         except ValueError:
@@ -2655,7 +3216,7 @@ def doc_file(HocSinh, filename=DATA_FILE):
 # ═══════════════════════════════════════════════════════════════
 # MERGE DATA — union merge, không mất dữ liệu
 # ═══════════════════════════════════════════════════════════════
-def _normalize_remote(raw):
+def _normalize_remote(raw: dict) -> dict[int, dict]:
     """Chuẩn hóa data remote về format chuẩn (key int)."""
     out = {}
     for sid_str, info in raw.items():
@@ -2698,7 +3259,7 @@ def _normalize_remote(raw):
 # ═══════════════════════════════════════════════════════════════
 # DIFF DATA — so sánh 2 phiên bản HocSinh
 # ═══════════════════════════════════════════════════════════════
-def _normalize_simple(raw):
+def _normalize_simple(raw: dict) -> dict[int, dict]:
     """Normalize dict raw → {sid_int: info} với weeks key int."""
     out = {}
     for sid_str, info in raw.items():
@@ -2725,7 +3286,7 @@ def _normalize_simple(raw):
     return out
 
 
-def diff_data(old_raw, new_raw):
+def diff_data(old_raw: dict, new_raw: dict) -> list[str]:
     """
     So sánh 2 dataset.
     Trả về list các dòng mô tả thay đổi.
@@ -2781,7 +3342,7 @@ def diff_data(old_raw, new_raw):
 
     return changes
 
-def _merge_week(local_w, remote_w):
+def _merge_week(local_w: dict, remote_w: dict) -> dict:
     """
     Union merge 1 tuần:
       - attendance: OR (ai true thì true)
@@ -2804,7 +3365,7 @@ def _merge_week(local_w, remote_w):
     return merged
 
 
-def _merge_hs(local_hs, remote_hs):
+def _merge_hs(local_hs: dict, remote_hs: dict) -> dict:
     merged = {
         "name":  local_hs.get("name")  or remote_hs.get("name",  ""),
         "class": local_hs.get("class") or remote_hs.get("class", ""),
@@ -2841,7 +3402,95 @@ def _merge_hs(local_hs, remote_hs):
     return merged
 
 
-def merge_data(local_data, remote_data):
+def _pick3(l_val, r_val, b_val):
+    """Merge 3 chiều cho 1 giá trị: bên nào đổi so với base thì lấy bên đó."""
+    if l_val == r_val:
+        return l_val
+    if l_val == b_val:      # local không đổi -> lấy remote
+        return r_val
+    return l_val            # local đổi (hoặc cả hai đổi) -> local thắng
+
+
+def _int_keys(d):
+    out = {}
+    for k, v in (d or {}).items():
+        try:
+            out[int(k)] = v
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _merge_week3(local_w, remote_w, base_w):
+    local_w = local_w or {}
+    remote_w = remote_w or {}
+    base_w = base_w or {}
+    merged = {"attendance": {}, "reasons": {}, "errors": {}}
+    for day in THU:
+        la = bool(local_w.get("attendance", {}).get(day, False))
+        ra = bool(remote_w.get("attendance", {}).get(day, False))
+        ba = bool(base_w.get("attendance", {}).get(day, False))
+        merged["attendance"][day] = _pick3(la, ra, ba)
+        for key in ("reasons", "errors"):
+            lv = (local_w.get(key, {}).get(day, "") or "").strip()
+            rv = (remote_w.get(key, {}).get(day, "") or "").strip()
+            bv = (base_w.get(key, {}).get(day, "") or "").strip()
+            merged[key][day] = _pick3(lv, rv, bv)
+    return merged
+
+
+def _merge_hs3(local_hs, remote_hs, base_hs):
+    base_hs = base_hs or {}
+    merged = {}
+    for key in ("name", "class", "to"):
+        lv = str(local_hs.get(key, "") or "")
+        rv = str(remote_hs.get(key, "") or "")
+        bv = str(base_hs.get(key, "") or "")
+        merged[key] = _pick3(lv, rv, bv)
+    lw = _int_keys(local_hs.get("weeks"))
+    rw = _int_keys(remote_hs.get("weeks"))
+    bw = _int_keys(base_hs.get("weeks"))
+    merged["weeks"] = {}
+    for t in set(lw) | set(rw):
+        merged["weeks"][t] = _merge_week3(lw.get(t), rw.get(t), bw.get(t))
+    for t in range(1, TONG_TUAN + 1):
+        merged["weeks"].setdefault(t, tuan_moi())
+    return merged
+
+
+def merge_data(local_data: dict, remote_data: dict,
+               base_data: Optional[dict] = None) -> dict[int, dict]:
+    """
+    Merge 3 chiều: local / remote / base (bản đã đồng bộ lần trước).
+    - Ô nào chỉ remote đổi -> lấy remote; chỉ local đổi -> lấy local;
+      cả hai đổi -> local thắng.
+    - HS bị xóa ở một bên được xóa theo nếu bên kia không sửa gì.
+    - base = None (chưa biết lịch sử) -> không xóa HS nào, ô local có dữ liệu thắng.
+    """
+    l = _int_keys(local_data)
+    r = _int_keys(remote_data)
+    b = _int_keys(base_data)
+    merged = {}
+    for sid in set(l) | set(r):
+        l_hs = l.get(sid)
+        r_hs = r.get(sid)
+        b_hs = b.get(sid)
+        if l_hs is not None and r_hs is not None:
+            merged[sid] = _merge_hs3(l_hs, r_hs, b_hs)
+        elif l_hs is not None:
+            # Chỉ local có: remote đã xóa nếu base từng có và local không sửa
+            if b_hs is not None and l_hs == b_hs:
+                continue
+            merged[sid] = l_hs
+        else:
+            # Chỉ remote có: local đã xóa nếu base từng có và remote không sửa
+            if b_hs is not None and r_hs == b_hs:
+                continue
+            merged[sid] = r_hs
+    return merged
+
+
+def _merge_data_cu_co_the_xoa(local_data: dict, remote_data: dict) -> dict[int, dict]:
     # ── FIX: normalize sid về int ──
     def _norm_ids(d):
         out = {}
@@ -2866,19 +3515,20 @@ def merge_data(local_data, remote_data):
             merged[sid] = r_hs
     return merged
 
-def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
+def ghi_file(HocSinh: dict, ly_do_mac_dinh: str,
+             filename: str = DATA_FILE,
+             backup_count: int = 5,
+             base: Optional[dict] = None
+             ) -> tuple[bool, bool, Optional[str], Optional[dict]]:
     """
-    Pull → merge → push. Nếu push conflict → pull lại + merge lại + push.
-    Retry tối đa 3 lần. Trả (ok_local, ok_gh, err, merged_dict_or_None).
+    Pull -> merge 3 chiều (local / remote / base) -> push đúng SHA vừa pull.
+    Push conflict -> pull lại + merge lại + push, tối đa 3 lần.
+    Không đọc được remote -> KHÔNG push (tránh ghi đè dữ liệu người khác).
+    Trả (ok_local, ok_gh, err, merged_dict_or_None).
     """
-    # Auto-fill lý do
-    for sid, d in HocSinh.items():
-        for t, w in d.get("weeks", {}).items():
-            att = w.get("attendance", {})
-            rea = w.setdefault("reasons", ly_do_moi())
-            for day in THU:
-                if not att.get(day, False) and not rea.get(day, "").strip():
-                    rea[day] = ly_do_mac_dinh
+    remote_sha = None
+    skip_push = False
+    backed_up = False
 
     local_data = {int(k): v for k, v in HocSinh.items()}
     merged_dict = None
@@ -2891,23 +3541,29 @@ def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
         # ── PULL + MERGE ──
         if GH_CONFIG:
             log_info(f"Pull lần {attempt+1}...")
-            remote_raw = github_fetch(GH_CONFIG)
-            if remote_raw:
+            skip_push = False
+            merged_dict = None
+            status, remote_raw, remote_sha = github_fetch_ex(GH_CONFIG)
+            if status == "ok" and remote_raw and remote_raw.strip():
                 try:
                     parsed_raw = json.loads(
                         remote_raw,
                         object_pairs_hook=_object_pairs_hook_clean,
                     )
                     remote_data = _normalize_remote(parsed_raw)
-                    merged_dict = merge_data(local_data, remote_data)
+                    merged_dict = merge_data(local_data, remote_data, base)
                     log_info(f"✓ Merge OK — {len(merged_dict)} HS "
                              f"(local {len(local_data)} / remote {len(remote_data)})")
                 except Exception as e:
-                    log_error(f"Merge fail: {e} — dùng local only")
-                    merged_dict = None
+                    log_error(f"Merge fail: {e} — hủy push")
+                    skip_push = True
+                    last_err = f"Dữ liệu GitHub không đọc được: {e}"
+            elif status in ("ok", "missing"):
+                log_info("GitHub chưa có dữ liệu — push bản local")
             else:
-                log_warn("Không fetch được remote — local only")
-                merged_dict = None
+                skip_push = True
+                last_err = "Không đọc được GitHub nên hủy push để tránh ghi đè"
+                log_warn(last_err)
 
         # ── ĐÓNG GÓI ──
         source = merged_dict if merged_dict is not None else HocSinh
@@ -2915,12 +3571,15 @@ def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
             "_meta": {"updated_at": datetime.now(timezone.utc).isoformat()},
         }
         for k, v in source.items():
-            payload[str(k)] = v
-        content = json.dumps(payload, indent=2, ensure_ascii=False)
+            payload[str(k)] = _rut_gon_hs(v)
+        content = json.dumps(payload, ensure_ascii=False,
+                             separators=(",", ":"))
 
         # ── GHI LOCAL (chỉ lần đầu) ──
-        if not ok_local:
-            _backup_file(filename, keep=backup_count)
+        if content:
+            if not backed_up:
+                _backup_file(filename, keep=backup_count)
+                backed_up = True
             try:
                 tmp = filename + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
@@ -2935,7 +3594,10 @@ def ghi_file(HocSinh, ly_do_mac_dinh, filename=DATA_FILE, backup_count=5):
 
         # ── PUSH ──
         if GH_CONFIG:
-            ok_gh, err, conflict = github_push_ex(GH_CONFIG, content)
+            if skip_push:
+                return ok_local, False, last_err, None
+            ok_gh, err, conflict = github_push_ex(GH_CONFIG, content,
+                                                  sha=remote_sha)
             if ok_gh:
                 log_info(f"✓ Push GitHub OK (lần {attempt+1})")
                 return ok_local, True, None, merged_dict
@@ -2980,12 +3642,92 @@ class UndoStack:
     def push_redo(self, snapshot, label):
         self.redo.append((snapshot, label, _time.time()))
 
+    def push_undo_keep_redo(self, snapshot, label):
+        """Dùng khi redo: đẩy vào undo mà KHÔNG xóa redo stack."""
+        self.undo.append((snapshot, label, _time.time()))
+
     def clear(self):
         self.undo.clear(); self.redo.clear()
 
     def can_undo(self): return bool(self.undo)
     def can_redo(self): return bool(self.redo)
 
+# ═══════════════════════════════════════════════════════════════
+# CHANGELOG
+# ═══════════════════════════════════════════════════════════════
+CHANGELOG_ENTRIES = [
+    ("v2.4", "2026-10-16", [
+        ("section", "🐛 Fix bug"),
+        ("item", "  • Fix NameError 'stats' trong _build_xlsx_all"),
+        ("item", "  • Bỏ emoji khỏi PDF (font Việt không hỗ trợ)"),
+        ("item", "  • Tối ưu: tái sử dụng stats_year khi period=year"),
+    ]),
+    ("v2.3", "2026-10-16", [
+        ("section", "🆕 Tính năng mới"),
+        ("item", "  • Xuất báo cáo HTML có biểu đồ SVG (donut/line/bar)"),
+        ("item", "  • Xuất báo cáo PDF chuẩn A4 qua reportlab"),
+        ("item", "  • Xuất Excel all-in-one với chart native"),
+        ("item", "  • Tích hợp Zalo Bot — gửi thông báo vắng theo tuần"),
+        ("item", "  • Dialog đổi GitHub token trong app"),
+        ("item", "  • Auto-update từ GitHub raw + backup script"),
+        ("item", "  • Dropdown chọn kỳ thống kê (cả năm/HK1/HK2/tháng)"),
+        ("sep", ""),
+        ("section", "🐛 Fix bug"),
+        ("item", "  • Fix tháng 10–12 trả về rỗng trong thống kê"),
+        ("item", "  • Fix đường ref 90% trong Excel chart bị lệch 1 điểm"),
+        ("item", "  • Fix race condition khi load data ngầm"),
+        ("item", "  • Fix merge key int/string không nhất quán"),
+        ("sep", ""),
+        ("section", "♻️  Refactor"),
+        ("item", "  • Tách mo_settings_inline thành 8 hàm nhỏ"),
+        ("item", "  • Gộp logic thống kê vào compute_stats() dùng chung"),
+        ("item", "  • Bỏ emoji khỏi PDF để tránh tofu font"),
+    ]),
+    ("v2.2", "2026-10-15", [
+        ("section", "🆕 Tính năng mới"),
+        ("item", "  • Inline settings panel (không Toplevel rời)"),
+        ("item", "  • Blur overlay + glow-in animation cho panel"),
+        ("item", "  • Nút gửi Zalo thủ công"),
+        ("item", "  • Filter debounce cho tìm kiếm"),
+        ("sep", ""),
+        ("section", "🐛 Fix bug"),
+        ("item", "  • Fix tab indicator bị giật khi chuyển nhanh"),
+        ("item", "  • Fix animation job rò rỉ khi đóng panel"),
+    ]),
+    ("v2.1", "2026-10-13", [
+        ("section", "🆕 Tính năng mới"),
+        ("item", "  • Thêm trường Tổ (1-4) cho HS"),
+        ("item", "  • Cột Tổ trong bảng danh sách"),
+        ("item", "  • Filter theo Tổ"),
+        ("item", "  • Hiển thị Tổ trong bảng điểm danh (T1 · Tên)"),
+        ("item", "  • Xuất CSV có cột Tổ"),
+        ("item", "  • Nút Thêm/Sửa HS gộp chung"),
+        ("item", "  • Settings hiển thị inline (không cửa sổ rời)"),
+    ]),
+    ("v2.0", "2026-10-12", [
+        ("section", "✨ Animation"),
+        ("item", "  • Window fade-in, slide panel, typewriter"),
+        ("item", "  • Progress bar, row flash, confetti"),
+        ("sep", ""),
+        ("section", "🐛 Fix bug"),
+        ("item", "  • Fix key int/string trong weeks"),
+        ("item", "  • Fix merge data không mất dữ liệu"),
+        ("item", "  • Fix UI đơ bằng threading"),
+        ("sep", ""),
+        ("section", "🚀 Tính năng"),
+        ("item", "  • Pull → Merge → Push tự động"),
+        ("item", "  • Backup tự động"),
+        ("item", "  • Lịch sử thay đổi GitHub"),
+        ("item", "  • Undo/Redo (Ctrl+Z / Ctrl+Y)"),
+        ("item", "  • Thống kê, Export CSV"),
+    ]),
+    ("v1.0", "2026-10-01", [
+        ("section", "📦 Bản đầu tiên"),
+        ("item", "  • Quản lý HS 35 tuần, 2 học kỳ"),
+        ("item", "  • Điểm danh / Lý do / Lỗi vi phạm"),
+        ("item", "  • Sync GitHub, UI Catppuccin"),
+    ]),
+]
 
 # ═══════════════════════════════════════════════════════════════
 # MAIN APP
@@ -3009,7 +3751,7 @@ class UngDungQuanLy:
         global GH_CONFIG
 
         self.root = root
-        self.root.title("Hệ Thống Quản Lý Học Sinh v2.3")
+        self.root.title("Hệ Thống Quản Lý Học Sinh v2.4")
         self.root.geometry("1280x880")
         self.root.configure(bg=self.NEN)
         self.root.minsize(1120, 760)
@@ -3031,6 +3773,9 @@ class UngDungQuanLy:
         self.khoa_sap_xep    = self.settings["sort_key"]
         self.dao_sap_xep     = self.settings["sort_desc"]
         self._dirty          = False
+        self._base           = None
+        self._ui_queue       = queue.Queue()
+        self.root.after(40, self._drain_ui_queue)
         self._debounce_job   = None
         self._saving         = False
         self._progress_running = False
@@ -3074,8 +3819,26 @@ class UngDungQuanLy:
         else:
             log_info("Không có GitHub config — chạy local-only")
 
-        # Load data
-        n, warns = doc_file(self.HocSinh)
+        # Load data — chạy ngầm, KHÔNG mutate self.HocSinh từ thread
+        self._data_loaded = False
+        self._data_load_result = {"n": 0, "warns": [], "err": None,
+                                   "data": {}}
+        
+        def _bg_load():
+            try:
+                new_data = {}                          # ← dict riêng
+                n, warns = doc_file(new_data)
+                self._data_load_result["data"]  = new_data
+                self._data_load_result["n"]     = n
+                self._data_load_result["warns"] = warns
+            except Exception as e:
+                self._data_load_result["err"] = e
+                log_error(f"Load data fail: {e}\n{traceback.format_exc()}")
+            finally:
+                self._data_loaded = True
+                self._ui_queue.put((lambda _a: self._on_data_loaded(), None))
+        
+        threading.Thread(target=_bg_load, daemon=True).start()
 
         self._cai_dat_style()
         self._tao_giao_dien()
@@ -3087,18 +3850,6 @@ class UngDungQuanLy:
 
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
-
-        gh_status = "GitHub ✓" if GH_CONFIG else "Local only"
-        if n > 0:
-            msg = f"Đã tải {n} HS · {gh_status}"
-            if warns:
-                msg += f" · ⚠ {len(warns)} cảnh báo"
-            self.thong_bao(msg, self.XANH_LA)
-        else:
-            self.thong_bao(f"Chưa có dữ liệu · {gh_status}", self.CHU_MO)
-
-        if warns:
-            log_warn("Load warnings:\n  - " + "\n  - ".join(warns))
 
         # Health check GitHub (async)
         if GH_CONFIG:
@@ -3122,6 +3873,50 @@ class UngDungQuanLy:
         if self.settings.get("enable_animation", True):
             fade_in_window(self.root)
 
+    def _on_data_loaded(self):
+        """Callback khi load xong data (chạy trong main thread)."""
+        n = self._data_load_result["n"]
+        warns = self._data_load_result["warns"]
+        err = self._data_load_result["err"]
+        new_data = self._data_load_result.get("data") or {}
+
+        # ── SWAP trong main thread — an toàn, không race ──
+        if new_data:
+            self.HocSinh.clear()
+            self.HocSinh.update(new_data)
+            log_info(f"✓ Đã swap {len(new_data)} HS vào UI state")
+            # Base cho merge 3 chiều: chỉ tin base khi dữ liệu vừa tải từ GitHub
+            self._base = deepcopy(new_data) if LOADED_FROM_REMOTE else None
+            # Migrate dữ liệu cũ: ô chưa điểm danh bị tự điền "Không phép"
+            if not self.settings.get("migrated_unrecorded", False):
+                n_fix = migrate_unrecorded(
+                    self.HocSinh, self.settings["ly_do_mac_dinh"])
+                if n_fix:
+                    self._dirty = True
+                    log_info(f"✓ Migrate: trả {n_fix} ô về chưa điểm danh")
+                if not self.read_only:
+                    self.settings["migrated_unrecorded"] = True
+                    save_settings(self.settings)
+
+        try:
+            self.cap_nhat_bang()
+            self.cap_nhat_diem_danh()
+        except Exception as e:
+            log_warn(f"Refresh after load fail: {e}")
+        
+        if err:
+            self.thong_bao(f"✗ Lỗi tải data: {err}", self.DO)
+            return
+        
+        gh_status = "GitHub ✓" if GH_CONFIG else "Local only"
+        if n > 0:
+            msg = f"Đã tải {n} HS · {gh_status}"
+            if warns:
+                msg += f" · ⚠ {len(warns)} cảnh báo"
+            self.thong_bao(msg, self.XANH_LA)
+        else:
+            self.thong_bao(f"Chưa có dữ liệu · {gh_status}", self.CHU_MO)
+
     # ═══ Quyền truy cập ═══
     def _can_write(self):
         """Trả True nếu có quyền ghi. Hiện cảnh báo nếu không."""
@@ -3131,12 +3926,17 @@ class UngDungQuanLy:
                 "Mở lại app và nhập mật khẩu để có toàn quyền.",
                 self.DO)
             return False
+        if getattr(self, "_saving", False):
+            self.thong_bao("⏳ Đang lưu lên GitHub, đợi vài giây rồi sửa tiếp",
+                           self.VANG)
+            return False
         return True
 
     def _apply_read_only_ui(self):
         """Đổi tiêu đề + disable các nút chỉnh sửa (chỉ UX)."""
         try:
-            self.root.title("Hệ Thống Quản Lý Học Sinh v2.3 — 🔒 CHỈ XEM")
+            self.root.title(
+                f"Hệ Thống Quản Lý Học Sinh v{APP_VERSION} — 🔒 CHỈ XEM")
         except Exception:
             pass
 
@@ -3172,15 +3972,26 @@ class UngDungQuanLy:
                     pass
 
     # ═══ Threading helpers ═══
+    def _drain_ui_queue(self):
+        """Chạy trong main thread: thực thi callback do thread phụ xếp hàng."""
+        try:
+            while True:
+                cb, arg = self._ui_queue.get_nowait()
+                try:
+                    cb(arg)
+                except Exception as e:
+                    log_error(f"UI callback fail: {e}\n{traceback.format_exc()}")
+        except queue.Empty:
+            pass
+        try:
+            self.root.after(40, self._drain_ui_queue)
+        except Exception:
+            pass
+
     def _async(self, fn, on_success=None, on_error=None):
         def _safe_call(cb, arg):
-            try:
-                # Kiểm tra root còn sống trước khi gọi after
-                if not self.root.winfo_exists():
-                    return
-                self.root.after(0, lambda: cb(arg))
-            except Exception:
-                pass  # root đã bị destroy → bỏ qua
+            # Không chạm Tk từ thread phụ, chỉ xếp hàng cho main thread
+            self._ui_queue.put((cb, arg))
 
         def worker():
             try:
@@ -3197,7 +4008,7 @@ class UngDungQuanLy:
     def _health_check_gh(self):
         global GH_CONFIG
         ok, msg = github_health_check(GH_CONFIG)
-        self.root.after(0, lambda: self._on_health_result(ok, msg))
+        self._ui_queue.put((lambda _a: self._on_health_result(ok, msg), None))
 
     def _on_health_result(self, ok, msg):
         if not hasattr(self, "gh_badge"): return
@@ -3300,6 +4111,14 @@ class UngDungQuanLy:
                 if force:
                     self.thong_bao(
                         f"✓ Đã là phiên bản mới nhất (v{APP_VERSION})",
+                        self.XANH_LA)
+                return
+
+            remote_ver = _parse_version(remote)
+            if _version_tuple(remote_ver) <= _version_tuple(APP_VERSION):
+                if force:
+                    self.thong_bao(
+                        f"✓ Không có bản mới hơn (máy v{APP_VERSION}, GitHub v{remote_ver})",
                         self.XANH_LA)
                 return
 
@@ -3418,6 +4237,20 @@ class UngDungQuanLy:
 
         # ── Chuẩn hóa xuống dòng về LF để tránh \r\r\n khi ghi ──
         remote_content = _norm_text(remote_content)
+        _lines = remote_content.split("\n")
+        if _lines and sum(1 for ln in _lines if not ln.strip()) / len(_lines) > 0.35:
+            remote_content = _fix_double_newlines(remote_content)
+
+        # ── Kiểm tra cú pháp trước khi ghi đè chính mình ──
+        try:
+            compile(remote_content, "<update>", "exec")
+        except SyntaxError as e:
+            log_error(f"Update bị hủy, file mới lỗi cú pháp: {e}")
+            messagebox.showerror(
+                "Bản cập nhật bị lỗi",
+                f"File tải về có lỗi cú pháp nên KHÔNG được ghi đè.\n\n{e}",
+                parent=dlg)
+            return
 
         if not script_path:
             # Cho phép người dùng chọn file .py thủ công
@@ -3476,8 +4309,9 @@ class UngDungQuanLy:
             # Rollback nếu có thể
             try:
                 shutil.copy2(bak_path, script_path)
-            except Exception:
-                pass
+                log_info("✓ Đã rollback script")
+            except Exception as rollback_err:
+                log_error(f"Rollback fail: {rollback_err}")
             messagebox.showerror(
                 "Lỗi cập nhật",
                 f"Không ghi được file mới — đã rollback:\n{e}",
@@ -3504,187 +4338,51 @@ class UngDungQuanLy:
                 self.XANH_LA)
 
     def mo_settings_inline(self):
-        """Panel settings nổi giữa cửa sổ chính (không tạo Toplevel)."""
-        # Đóng panel khác nếu đang mở (stats / history)
-        if self._settings_overlay is not None:
-            fn = getattr(self, "_close_settings_fn", None)
-            if fn:
-                try: fn()
-                except Exception: pass
-            try: self.root.update_idletasks()
-            except Exception: pass
-        # ═══ Hàm đóng — có fade out ═══
-        def close_settings():
-            def _do_destroy():
-                # Xóa hết widget con của settings
-                for attr in ("_settings_cover",
-                             "_settings_overlay",
-                             "_settings_shadow",
-                             "_settings_blur"):
-                    w = getattr(self, attr, None)
-                    if w is not None:
-                        try: w.destroy()
-                        except Exception: pass
-                        setattr(self, attr, None)
-                # Force cập nhật UI để widget biến mất ngay
-                try: self.root.update_idletasks()
-                except Exception: pass
+        """Mở Settings panel — dùng chung _mo_panel_inline."""
+        self._mo_panel_inline(
+            620, 660, self.XANH_DUONG,
+            self._build_settings_content)
 
-            # Fade out — chụp card rồi blend với màu nền
-            if self.settings.get("enable_animation", True) and PIL_OK:
-                try:
-                    cw = getattr(self, "_settings_card_w", 620)
-                    ch = getattr(self, "_settings_card_h", 660)
-                    card_obj = getattr(self, "_settings_overlay", None)
+    # ─────────────────────────────────────────────────────
+    def _build_settings_content(self, card, close_fn):
+        """Entry point dựng nội dung Settings card."""
+        self._settings_close_fn = close_fn
 
-                    # Xóa cover cũ nếu đang có
-                    old_cover = getattr(self, "_settings_cover", None)
-                    if old_cover is not None:
-                        try: old_cover.destroy()
-                        except Exception: pass
-                        self._settings_cover = None
+        close_btn = self._build_settings_header(card, close_fn)
 
-                    # Chụp card
-                    img_card = None
-                    if card_obj is not None:
-                        try:
-                            card_obj.update_idletasks()
-                            self.root.update()
-                        except Exception:
-                            pass
-                        img_card = _grab_widget_image(card_obj, cw, ch)
+        tab_frames, switch_tab = self._build_settings_tab_bar(card)
 
-                    if img_card is not None:
-                        # Ẩn card thật
-                        try: card_obj.place_forget()
-                        except Exception: pass
+        self._build_settings_tab_effects(tab_frames["effects"])
+        self._build_settings_tab_config(tab_frames["config"], close_fn)
+        self._build_settings_tab_changelog(tab_frames["changelog"])
 
-                        cover = tk.Label(self.root, borderwidth=0, bg=self.NEN)
-                        cover.place(relx=0.5, rely=0.5, anchor="center",
-                                    width=cw, height=ch)
-                        cover.lift()
-                        blur = getattr(self, "_settings_blur", None)
-                        if blur is not None:
-                            try: blur.lift()
-                            except Exception: pass
-                        cover.lift()
-                        self._settings_cover = cover
+        self._build_settings_footer(card, close_fn)
 
-                        total = 12
-                        def _fade_out_step(i):
-                            if i > total:
-                                try: cover.destroy()
-                                except Exception: pass
-                                self._settings_cover = None
-                                _do_destroy()
-                                return
-                            t = i / total
-                            k = t * t * (3 - 2 * t)
-                            # alpha card: 1 → 0
-                            alpha = 1.0 - k
-                            photo = _blend_card_with_bg(
-                                img_card, cw, ch, alpha, self.NEN)
-                            if photo:
-                                cover.configure(image=photo)
-                                cover.image = photo
-                            self.root.after(14, lambda: _fade_out_step(i + 1))
+        switch_tab("effects")
+        close_btn.config(command=close_fn)
 
-                        self.root.after(0, lambda: _fade_out_step(0))
-                        return
-                except Exception as e:
-                    log_warn(f"Fade out fail: {e}")
-
-            # Fallback: destroy ngay
-            _do_destroy()
-        
-        # ═══ Blur overlay — chụp màn hình + làm mờ bằng Pillow ═══
-        card_w, card_h = 620, 660
-
-        # Chờ 1 frame để UI vẽ xong trước khi chụp
-        self.root.update_idletasks()
-
-        blur_ok = False
-        if PIL_OK:
-            try:
-                # Toạ độ cửa sổ chính trên màn hình
-                rx = self.root.winfo_rootx()
-                ry = self.root.winfo_rooty()
-                rw = self.root.winfo_width()
-                rh = self.root.winfo_height()
-
-                # Chụp cửa sổ
-                img = ImageGrab.grab(bbox=(rx, ry, rx + rw, ry + rh))
-
-                # Làm mờ Gauss
-                img = img.filter(ImageFilter.GaussianBlur(radius=12))
-
-                # Phủ lớp tối nhẹ để card nổi hơn
-                img = img.convert("RGBA")
-                dark = Image.new("RGBA", img.size, (10, 10, 20, 90))
-                img = Image.alpha_composite(img, dark).convert("RGB")
-
-                # Convert sang PhotoImage và hiển thị
-                photo = ImageTk.PhotoImage(img)
-                blur_label = tk.Label(self.root, image=photo,
-                                       borderwidth=0, highlightthickness=0)
-                blur_label.image = photo   # giữ reference tránh bị GC
-                blur_label.place(x=0, y=0, relwidth=1, relheight=1)
-                blur_label.lift()
-                blur_label.bind("<Button-1>", lambda e: close_settings())
-                blur_label.bind("<MouseWheel>", lambda e: "break")
-                blur_label.bind("<Button-4>",   lambda e: "break")
-                blur_label.bind("<Button-5>",   lambda e: "break")
-                self._settings_blur = blur_label
-                blur_ok = True
-            except Exception as e:
-                log_warn(f"Không blur được: {e}")
-
-        # ── Fallback nếu không có Pillow / chụp lỗi ──
-        if not blur_ok:
-            overlay = tk.Frame(self.root, bg="#1a1a26")
-            overlay.place(x=0, y=0, relwidth=1, relheight=1)
-            overlay.lift()
-            overlay.bind("<Button-1>", lambda e: close_settings())
-            overlay.bind("<MouseWheel>", lambda e: "break")
-            self._settings_blur = overlay
-
-        # ── Shadow ──
-        shadow = tk.Frame(self.root, bg="#0a0a14")
-        shadow.place(relx=0.5, rely=0.5, anchor="center",
-                     width=card_w + 8, height=card_h + 8)
-        shadow.lift()
-        shadow.bind("<Button-1>", lambda e: None)
-        self._settings_shadow = shadow
-
-        # ── Card giữa — viền xanh ──
-        card = tk.Frame(self.root, bg=self.NEN,
-                        highlightthickness=2,
-                        highlightbackground=self.NEN)
-        card.place(relx=0.5, rely=0.5, anchor="center",
-                   width=card_w, height=card_h)
-        card.pack_propagate(False)
-        card.lift()
-        self._settings_overlay = card
-        self._settings_card_w  = card_w
-        self._settings_card_h  = card_h
-
-
-
-        # ═══ Header card ═══
+    # ─────────────────────────────────────────────────────
+    def _build_settings_header(self, card, close_fn):
         h = tk.Frame(card, bg=self.NEN2, height=52)
         h.pack(fill="x"); h.pack_propagate(False)
         tk.Label(h, text="⚙  CÀI ĐẶT", bg=self.NEN2, fg=self.TIM,
-                 font=("Segoe UI", 14, "bold")).pack(side="left", padx=18, pady=14)
-
-        # Nút X đóng
-        close_btn = tk.Button(h, text="✕", bg=self.NEN2, fg=self.CHU_MO,
-                              activebackground=self.DO, activeforeground="#1e1e2e",
-                              relief="flat", cursor="hand2",
-                              font=("Segoe UI", 11, "bold"), bd=0,
-                              padx=12, pady=0)
+                 font=("Segoe UI", 14, "bold")
+                 ).pack(side="left", padx=18, pady=14)
+        close_btn = tk.Button(
+            h, text="✕", bg=self.NEN2, fg=self.CHU_MO,
+            activebackground=self.DO, activeforeground="#1e1e2e",
+            relief="flat", cursor="hand2",
+            font=("Segoe UI", 11, "bold"), bd=0,
+            padx=12, pady=0, command=close_fn)
         close_btn.pack(side="right", padx=8, pady=8)
+        return close_btn
 
-        # ═══ Tab bar — dùng Canvas + 1 indicator oval duy nhất ═══
+    # ─────────────────────────────────────────────────────
+    def _build_settings_tab_bar(self, card):
+        """
+        Tab bar + indicator animation + container cho tab content.
+        Returns (tab_frames: dict[str, Frame], switch_tab: callable).
+        """
         TAB_H = 40
         tab_bar = tk.Canvas(card, bg=self.NEN2, height=TAB_H,
                              highlightthickness=0, bd=0)
@@ -3695,142 +4393,89 @@ class UngDungQuanLy:
             ("config",    "📋 Cấu hình khác"),
             ("changelog", "📝 Update log"),
         ]
-        tab_btns   = {}    # key -> {x, y, w, h, text_id}
+        tab_btns = {}
         tab_frames = {}
 
-        # Indicator — rounded rectangle (vẽ TRƯỚC để text nằm trên)
-        INDICATOR_COLOR = "#e8e8f0"    # trắng hơi xám — đổi "#ffffff" nếu muốn trắng tinh
-        INDICATOR_RADIUS = 10          # bán kính bo góc (px)
+        INDICATOR_COLOR  = "#e8e8f0"
+        INDICATOR_RADIUS = 10
 
         def _rr_coords(x1, y1, x2, y2, r=INDICATOR_RADIUS):
-            """Trả list toạ độ cho rounded rectangle (polygon smooth=True)."""
-            # Giới hạn r không vượt nửa width/height
             max_r = min(abs(x2 - x1) / 2, abs(y2 - y1) / 2)
             r = min(r, max_r)
-            # 20 điểm, mỗi góc có 2 điểm trùng để bo cong
             return (
-                x1+r, y1,
-                x1+r, y1,
-                x2-r, y1,
-                x2-r, y1,
-                x2, y1,
-                x2, y1+r,
-                x2, y1+r,
-                x2, y2-r,
-                x2, y2-r,
-                x2, y2,
-                x2-r, y2,
-                x2-r, y2,
-                x1+r, y2,
-                x1+r, y2,
-                x1, y2,
-                x1, y2-r,
-                x1, y2-r,
-                x1, y1+r,
-                x1, y1+r,
-                x1, y1,
+                x1+r, y1, x1+r, y1, x2-r, y1, x2-r, y1,
+                x2, y1, x2, y1+r, x2, y1+r, x2, y2-r,
+                x2, y2-r, x2, y2, x2-r, y2, x2-r, y2,
+                x1+r, y2, x1+r, y2, x1, y2, x1, y2-r,
+                x1, y2-r, x1, y1+r, x1, y1+r, x1, y1,
             )
 
         indicator_id = tab_bar.create_polygon(
             *_rr_coords(0, 0, 0, 0),
-            fill=INDICATOR_COLOR, outline="", smooth=True,
-        )
+            fill=INDICATOR_COLOR, outline="", smooth=True)
 
-        # Font để đo width chính xác
         _tab_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
-        PADDING_X = 16
-        GAP       = 6
-        BTN_H     = 30
-        BTN_Y     = (TAB_H - BTN_H) // 2
-        cursor_x  = 6
-
+        PADDING_X, GAP, BTN_H = 16, 6, 30
+        BTN_Y = (TAB_H - BTN_H) // 2
+        cursor_x = 6
         for key, label in tab_defs:
             text_w = _tab_font.measure(label)
             w = text_w + PADDING_X * 2
             cx = cursor_x + w // 2
             cy = BTN_Y + BTN_H // 2
-
             text_id = tab_bar.create_text(cx, cy, text=label,
                                             font=_tab_font,
                                             fill=self.CHU_MO)
-
-            tab_btns[key] = {
-                "x": cursor_x, "y": BTN_Y,
-                "w": w, "h": BTN_H,
-                "text_id": text_id,
-            }
+            tab_btns[key] = {"x": cursor_x, "y": BTN_Y,
+                             "w": w, "h": BTN_H, "text_id": text_id}
             cursor_x += w + GAP
 
-        # ── State ──
         current_tab = {"key": None}
         _ind_anim   = {"job": None}
 
         def _set_text_colors(active_key):
             for k, info in tab_btns.items():
                 try:
-                    if k == active_key:
-                        tab_bar.itemconfigure(info["text_id"], fill="#1e1e2e")
-                    else:
-                        tab_bar.itemconfigure(info["text_id"], fill=self.CHU_MO)
-                except Exception:
-                    pass
+                    fill = "#1e1e2e" if k == active_key else self.CHU_MO
+                    tab_bar.itemconfigure(info["text_id"], fill=fill)
+                except Exception as e:
+                    log_warn(f"tab text color fail: {e}")
 
         def _move_indicator(old_key, new_key):
-            # Hủy animation đang chạy
             if _ind_anim["job"]:
                 try: self.root.after_cancel(_ind_anim["job"])
                 except Exception: pass
                 _ind_anim["job"] = None
-
             if new_key not in tab_btns:
                 return
-
             n = tab_btns[new_key]
             nx = n["x"] + n["w"] // 2
             ny = n["y"] + n["h"] // 2
-            nw = n["w"]
-            nh = n["h"]
-
-            # Lần đầu hoặc không có tab cũ → hiện ngay
+            nw, nh = n["w"], n["h"]
             if old_key is None or old_key not in tab_btns:
                 try:
                     tab_bar.coords(indicator_id, *_rr_coords(
-                        nx - nw / 2, ny - nh / 2,
-                        nx + nw / 2, ny + nh / 2,
-                    ))
-                except Exception:
-                    pass
+                        nx - nw/2, ny - nh/2, nx + nw/2, ny + nh/2))
+                except Exception as e:
+                    log_warn(f"indicator place fail: {e}")
                 _set_text_colors(new_key)
                 return
-
             o = tab_btns[old_key]
-            ox = o["x"] + o["w"] // 2
-            oy = o["y"] + o["h"] // 2
-            ow = o["w"]
-            oh = o["h"]
-
-            # Đổi màu text cũ ngay, text mới sau khi anim xong
-            try:
-                tab_bar.itemconfigure(o["text_id"], fill=self.CHU_MO)
-            except Exception:
-                pass
-
+            ox, oy = o["x"] + o["w"]//2, o["y"] + o["h"]//2
+            ow, oh = o["w"], o["h"]
+            try: tab_bar.itemconfigure(o["text_id"], fill=self.CHU_MO)
+            except Exception: pass
             total = 16
             def _step(i):
                 if i > total:
                     _ind_anim["job"] = None
-                    # Đảm bảo vị trí cuối chính xác
                     try:
                         tab_bar.coords(indicator_id, *_rr_coords(
-                            nx - nw / 2, ny - nh / 2,
-                            nx + nw / 2, ny + nh / 2,
-                        ))
-                    except Exception:
-                        pass
+                            nx - nw/2, ny - nh/2, nx + nw/2, ny + nh/2))
+                    except Exception: pass
                     _set_text_colors(new_key)
                     return
                 t = i / total
-                # Ease-out cubic cho mượt
                 k = 1 - (1 - t) ** 3
                 cx = ox + (nx - ox) * k
                 cy = oy + (ny - oy) * k
@@ -3838,59 +4483,48 @@ class UngDungQuanLy:
                 ch = oh + (nh - oh) * k
                 try:
                     tab_bar.coords(indicator_id, *_rr_coords(
-                        cx - cw / 2, cy - ch / 2,
-                        cx + cw / 2, cy + ch / 2,
-                    ))
+                        cx - cw/2, cy - ch/2, cx + cw/2, cy + ch/2))
                 except Exception:
                     return
-                _ind_anim["job"] = self.root.after(16,
-                                                    lambda: _step(i + 1))
-
+                _ind_anim["job"] = self.root.after(
+                    16, lambda: _step(i + 1))
             _step(0)
+
+        container = tk.Frame(card, bg=self.NEN)
+        container.pack(fill="both", expand=True)
+
+        for key, _ in tab_defs:
+            tab_frames[key] = tk.Frame(container, bg=self.NEN)
 
         def switch_tab(key):
             old_key = current_tab["key"]
             if old_key == key:
                 return
             current_tab["key"] = key
-
-            # Di chuyển indicator
             _move_indicator(old_key, key)
-
-            # Hiện frame tương ứng
             for k, f in tab_frames.items():
                 if k == key:
-                    f.pack(fill="both", expand=True,
-                            padx=16, pady=(10, 0))
+                    f.pack(fill="both", expand=True, padx=16, pady=(10, 0))
                 else:
                     f.pack_forget()
 
-        # Click vào canvas → xác định tab
         def _on_tab_click(e):
             for key, info in tab_btns.items():
                 if (info["x"] <= e.x <= info["x"] + info["w"]
                         and info["y"] <= e.y <= info["y"] + info["h"]):
                     switch_tab(key)
                     return
-
         tab_bar.bind("<Button-1>", _on_tab_click)
+        return tab_frames, switch_tab
 
-        # ═══ Container ═══
-        container = tk.Frame(card, bg=self.NEN)
-        container.pack(fill="both", expand=True)
-
-        # ═══════════════════════════════════════════════════════
-        # TAB 1 — HIỆU ỨNG
-        # ═══════════════════════════════════════════════════════
-        f_effects = tk.Frame(container, bg=self.NEN)
-        tab_frames["effects"] = f_effects
-
-        tk.Label(f_effects, text="Bật/tắt hiệu ứng và âm thanh UI",
+    # ─────────────────────────────────────────────────────
+    def _build_settings_tab_effects(self, parent):
+        tk.Label(parent, text="Bật/tắt hiệu ứng và âm thanh UI",
                  bg=self.NEN, fg=self.CHU_MO,
                  font=("Segoe UI", 8, "italic"), anchor="w"
                  ).pack(fill="x", pady=(0, 8))
 
-        def make_toggle(parent, icon_label, desc, key, color_on):
+        def make_toggle(icon_label, desc, key, color_on):
             row = tk.Frame(parent, bg=self.NEN2, padx=14, pady=12)
             row.pack(fill="x", pady=4)
             info = tk.Frame(row, bg=self.NEN2)
@@ -3900,19 +4534,15 @@ class UngDungQuanLy:
             tk.Label(info, text=desc, bg=self.NEN2, fg=self.CHU_MO,
                      font=("Segoe UI", 8, "italic"), anchor="w",
                      wraplength=380, justify="left").pack(fill="x", pady=(2, 0))
-
             btn = tk.Button(row, bg=self.NEN3, fg=self.CHU,
                             relief="flat", cursor="hand2",
                             font=("Segoe UI", 9, "bold"),
                             width=10, pady=5, bd=0)
-
             def refresh():
                 cur = self.settings.get(key, True)
-                if cur:
-                    btn.config(text="✓ BẬT", bg=color_on, fg="#1e1e2e")
-                else:
-                    btn.config(text="✗ TẮT", bg=self.NEN3, fg=self.CHU)
-
+                btn.config(text="✓ BẬT" if cur else "✗ TẮT",
+                           bg=color_on if cur else self.NEN3,
+                           fg="#1e1e2e" if cur else self.CHU)
             def toggle():
                 cur = self.settings.get(key, True)
                 self.settings[key] = not cur
@@ -3921,76 +4551,61 @@ class UngDungQuanLy:
                 self.thong_bao(
                     f"{icon_label}: {'BẬT' if not cur else 'TẮT'}",
                     color_on if not cur else self.CHU_MO)
-
             btn.config(command=toggle)
             btn.pack(side="right", padx=(10, 0))
             refresh()
 
-        make_toggle(f_effects, "🎬  Animation",
-                    "Bật/tắt toàn bộ hiệu ứng chuyển động "
-                    "(fade, slide, flash, typewriter, progress bar, ...)",
+        make_toggle("🎬  Animation",
+                    "Bật/tắt toàn bộ hiệu ứng chuyển động (fade, slide, "
+                    "flash, typewriter, progress bar, ...)",
                     "enable_animation", self.XANH_LA)
-
-        make_toggle(f_effects, "🎉  Confetti",
-                    "Bắn pháo giấy khi push GitHub thành công. "
-                    "Chỉ hoạt động trên Windows.",
+        make_toggle("🎉  Confetti",
+                    "Bắn pháo giấy khi push GitHub thành công.",
                     "enable_confetti", self.TIM)
-
-        make_toggle(f_effects, "🔊  Sound",
-                    "Bật/tắt âm thanh phản hồi khi lưu, đổi trạng thái, ... "
-                    "(chưa hỗ trợ — dành cho tương lai).",
-                    "enable_sound", self.CAM)
-
-        make_toggle(f_effects, "🔃  Tự kiểm tra cập nhật",
-                    "Tự động kiểm tra bản mới từ GitHub mỗi 6 giờ. "
-                    "Khi phát hiện sẽ hiện hộp thoại để bạn chọn.",
+        make_toggle("🔃  Tự kiểm tra cập nhật",
+                    "Tự động kiểm tra bản mới từ GitHub mỗi 6 giờ.",
                     "auto_check_update", self.XANH_DUONG)
 
-        # ═══════════════════════════════════════════════════════
-        # TAB 2 — CẤU HÌNH KHÁC (có scroll)
-        # ═══════════════════════════════════════════════════════
-        f_config = tk.Frame(container, bg=self.NEN)
-        tab_frames["config"] = f_config
-
-        canvas_cfg = tk.Canvas(f_config, bg=self.NEN,
+    # ─────────────────────────────────────────────────────
+    def _build_settings_tab_config(self, parent, close_fn):
+        """Tab Cấu hình khác — có scroll."""
+        canvas_cfg = tk.Canvas(parent, bg=self.NEN,
                                 highlightthickness=0, bd=0)
-        sb_cfg = ttk.Scrollbar(f_config, orient="vertical",
+        sb_cfg = ttk.Scrollbar(parent, orient="vertical",
                                 command=canvas_cfg.yview)
         canvas_cfg.configure(yscrollcommand=sb_cfg.set)
         sb_cfg.pack(side="right", fill="y")
         canvas_cfg.pack(side="left", fill="both", expand=True)
 
-        inner_cfg = tk.Frame(canvas_cfg, bg=self.NEN)
-        win_cfg = canvas_cfg.create_window((0, 0), window=inner_cfg, anchor="nw")
-        inner_cfg.bind("<Configure>",
-                       lambda e: canvas_cfg.configure(
-                           scrollregion=canvas_cfg.bbox("all")))
+        inner = tk.Frame(canvas_cfg, bg=self.NEN)
+        win = canvas_cfg.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: canvas_cfg.configure(
+                       scrollregion=canvas_cfg.bbox("all")))
         canvas_cfg.bind("<Configure>",
-                        lambda e: canvas_cfg.itemconfig(win_cfg, width=e.width))
+                        lambda e: canvas_cfg.itemconfig(win, width=e.width))
 
-        def _cfg_wheel(e):
-            canvas_cfg.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        def _cfg_lin(e):
-            canvas_cfg.yview_scroll(int(-1 if e.num == 4 else 1), "units")
-        canvas_cfg.bind("<MouseWheel>", _cfg_wheel)
-        canvas_cfg.bind("<Button-4>",   _cfg_lin)
-        canvas_cfg.bind("<Button-5>",   _cfg_lin)
+        def _wheel(e): canvas_cfg.yview_scroll(int(-1*(e.delta/120)), "units")
+        def _lin(e):   canvas_cfg.yview_scroll(int(-1 if e.num==4 else 1), "units")
+        canvas_cfg.bind("<MouseWheel>", _wheel)
+        canvas_cfg.bind("<Button-4>",   _lin)
+        canvas_cfg.bind("<Button-5>",   _lin)
 
-        tk.Label(inner_cfg, text="✏️  Sửa trực tiếp trong settings.json",
+        tk.Label(inner, text="✏️  Sửa trực tiếp trong settings.json",
                  bg=self.NEN, fg=self.XANH_DUONG,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(0, 8))
-        tk.Label(inner_cfg, text=f"File: {SETTINGS_FILE}",
+        tk.Label(inner, text=f"File: {SETTINGS_FILE}",
                  bg=self.NEN, fg=self.CHU_MO,
                  font=("Consolas", 8), anchor="w"
                  ).pack(fill="x", pady=(0, 12))
 
-        def make_cfg_group(parent, title, icon, items):
-            tk.Label(parent, text=f"{icon}  {title}",
+        def make_group(title, icon, items):
+            tk.Label(inner, text=f"{icon}  {title}",
                      bg=self.NEN, fg=self.TIM,
                      font=("Segoe UI", 10, "bold"), anchor="w"
                      ).pack(fill="x", pady=(8, 4))
-            box = tk.Frame(parent, bg=self.NEN2)
+            box = tk.Frame(inner, bg=self.NEN2)
             box.pack(fill="x", pady=(0, 6))
             for key, label, value, desc in items:
                 row = tk.Frame(box, bg=self.NEN2, padx=12, pady=8)
@@ -4000,28 +4615,28 @@ class UngDungQuanLy:
                 tk.Label(left, text=label, bg=self.NEN2, fg=self.CHU,
                          font=("Segoe UI", 10, "bold"), anchor="w"
                          ).pack(fill="x")
-                tk.Label(left, text=f"key: {key}", bg=self.NEN2, fg=self.CHU_MO,
-                         font=("Consolas", 8), anchor="w"
+                tk.Label(left, text=f"key: {key}", bg=self.NEN2,
+                         fg=self.CHU_MO, font=("Consolas", 8), anchor="w"
                          ).pack(fill="x", pady=(1, 0))
                 if desc:
                     tk.Label(left, text=desc, bg=self.NEN2, fg=self.CHU_MO,
                              font=("Segoe UI", 8, "italic"),
                              anchor="w", wraplength=380, justify="left"
                              ).pack(fill="x", pady=(1, 0))
-                tk.Label(row, text=str(value), bg=self.NEN3, fg=self.XANH_LA,
-                         font=("Consolas", 10, "bold"),
+                tk.Label(row, text=str(value), bg=self.NEN3,
+                         fg=self.XANH_LA, font=("Consolas", 10, "bold"),
                          padx=10, pady=4
                          ).pack(side="right", padx=(10, 0))
 
-        make_cfg_group(inner_cfg, "Điểm danh", "📋", [
-            ("ly_do_mac_dinh",  "Lý do mặc định",
+        make_group("Điểm danh", "📋", [
+            ("ly_do_mac_dinh", "Lý do mặc định",
              self.settings.get("ly_do_mac_dinh", "?"),
              "Lý do gán khi HS vắng không nhập lý do"),
             ("max_editable_week", "Tuần tối đa sửa",
              self.settings.get("max_editable_week", "?"),
              "Không cho sửa tuần vượt quá giá trị này"),
         ])
-        make_cfg_group(inner_cfg, "UI / Hiệu năng", "⚡", [
+        make_group("UI / Hiệu năng", "⚡", [
             ("click_delay_ms", "Click delay",
              f"{self.settings.get('click_delay_ms', '?')} ms",
              "Đợi phân biệt single/double click"),
@@ -4032,105 +4647,105 @@ class UngDungQuanLy:
              f"{self.settings.get('auto_save_interval_s', '?')} s",
              "Tự động lưu sau mỗi N giây nếu có thay đổi"),
         ])
-        make_cfg_group(inner_cfg, "Dữ liệu / Backup", "💾", [
+        make_group("Dữ liệu / Backup", "💾", [
             ("backup_count", "Backup giữ lại",
-             f"{self.settings.get('backup_count', '?')} bản",
-             "Số file output.txt.bak.<timestamp> giữ lại"),
+             f"{self.settings.get('backup_count', '?')} bản", ""),
             ("undo_stack_size", "Undo stack",
-             f"{self.settings.get('undo_stack_size', '?')} bước",
-             "Số lần Ctrl+Z có thể hoàn tác"),
+             f"{self.settings.get('undo_stack_size', '?')} bước", ""),
         ])
         sort_key = self.settings.get("sort_key", "ma")
         sort_dir = "Giảm dần" if self.settings.get("sort_desc", False) else "Tăng dần"
-        make_cfg_group(inner_cfg, "Sắp xếp", "🔤", [
-            ("sort_key",  "Cột sắp xếp mặc định",
-             {"ma": "Mã HS", "ten": "Họ tên", "lop": "Lớp", "to": "Tổ"}.get(sort_key, sort_key),
-             "Bấm tiêu đề cột để đổi"),
+        make_group("Sắp xếp", "🔤", [
+            ("sort_key", "Cột sắp xếp mặc định",
+             {"ma": "Mã HS", "ten": "Họ tên",
+              "lop": "Lớp", "to": "Tổ"}.get(sort_key, sort_key), ""),
             ("sort_desc", "Hướng sắp xếp", sort_dir, ""),
         ])
 
-        # ── Định dạng xuất cả năm ──
-        tk.Label(inner_cfg, text="📤  Định dạng xuất cả năm",
+        # ── Định dạng xuất ──
+        self._build_settings_export_picker(inner)
+
+        # ── GitHub info ──
+        self._build_settings_github_info(inner)
+
+        # ── Đường dẫn ──
+        self._build_settings_paths(inner)
+
+        # ── Công cụ ──
+        self._build_settings_tools(inner, close_fn)
+
+    # ─────────────────────────────────────────────────────
+    def _build_settings_export_picker(self, parent):
+        tk.Label(parent, text="📤  Định dạng xuất cả năm",
                  bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(12, 4))
-
-        export_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=8)
-        export_box.pack(fill="x", pady=(0, 6))
-
-        _export_var = tk.StringVar(
+        box = tk.Frame(parent, bg=self.NEN2, padx=12, pady=8)
+        box.pack(fill="x", pady=(0, 6))
+        export_var = tk.StringVar(
             value=self.settings.get("export_format", "excel"))
-        _cur_lbl_holder = {"w": None}
+        holder = {"w": None}
 
-        def _on_export_change():
-            val = _export_var.get()
+        def on_change():
+            val = export_var.get()
             self.settings["export_format"] = val
             save_settings(self.settings)
-            label = {"excel": "Excel (.xlsx)",
-                     "word":  "Word (.doc)"}.get(val, val)
-            if _cur_lbl_holder["w"] is not None:
-                try:
-                    _cur_lbl_holder["w"].config(
-                        text=f"Đang chọn: {label}")
-                except Exception:
-                    pass
+            label = {"excel": "Excel (.xlsx)", "word": "Word (.doc)",
+                     "pdf":   "PDF (.pdf)",    "html": "HTML (.html)"}.get(val, val)
+            if holder["w"] is not None:
+                holder["w"].config(text=f"Đang chọn: {label}")
             self.thong_bao(f"✓ Định dạng xuất: {label}", self.XANH_LA)
 
-        for _val, _label, _desc in [
+        for val, label, desc in [
             ("excel", "📊  Excel (.xlsx)",
-             "Nhiều sheet: Tổng hợp + Biểu đồ + mỗi tuần 1 sheet, "
-             "kèm chart Excel native (cần openpyxl)"),
-            ("word",  "📝  Word (.doc)",
-             "Báo cáo đầy đủ: bảng số liệu + biểu đồ SVG + nút in, "
-             "mở được bằng MS Word / LibreOffice"),
+             "Nhiều sheet: Tổng hợp + Biểu đồ + mỗi tuần 1 sheet"),
+            ("word",  "📝  Word (.doc)", "Báo cáo đầy đủ, mở bằng MS Word"),
+            ("pdf",   "📄  PDF (.pdf)", "Báo cáo PDF A4 (cần reportlab)"),
+            ("html",  "🌐  HTML (.html)", "Báo cáo HTML có biểu đồ SVG"),
         ]:
-            _r = tk.Frame(export_box, bg=self.NEN2, pady=4)
-            _r.pack(fill="x")
-            tk.Radiobutton(
-                _r, text=_label, variable=_export_var, value=_val,
-                command=_on_export_change,
-                bg=self.NEN2, fg=self.CHU, selectcolor=self.NEN3,
-                activebackground=self.NEN2,
-                activeforeground=self.XANH_DUONG,
-                font=("Segoe UI", 10, "bold"), anchor="w",
-                bd=0, highlightthickness=0, cursor="hand2"
-            ).pack(anchor="w")
-            tk.Label(_r, text="       " + _desc,
-                     bg=self.NEN2, fg=self.CHU_MO,
-                     font=("Segoe UI", 8, "italic"), anchor="w",
-                     justify="left", wraplength=380
+            r = tk.Frame(box, bg=self.NEN2, pady=4)
+            r.pack(fill="x")
+            tk.Radiobutton(r, text=label, variable=export_var, value=val,
+                           command=on_change,
+                           bg=self.NEN2, fg=self.CHU,
+                           selectcolor=self.NEN3,
+                           activebackground=self.NEN2,
+                           activeforeground=self.XANH_DUONG,
+                           font=("Segoe UI", 10, "bold"), anchor="w",
+                           bd=0, highlightthickness=0, cursor="hand2"
+                           ).pack(anchor="w")
+            tk.Label(r, text="       " + desc, bg=self.NEN2,
+                     fg=self.CHU_MO, font=("Segoe UI", 8, "italic"),
+                     anchor="w", justify="left", wraplength=380
                      ).pack(anchor="w")
 
-        _cur_fmt = self.settings.get("export_format", "excel")
-        _cur_label = {"excel": "Excel (.xlsx)",
-                      "word":  "Word (.doc)"}.get(_cur_fmt, _cur_fmt)
-        _lbl_cur = tk.Label(export_box, text=f"Đang chọn: {_cur_label}",
-                            bg=self.NEN2, fg=self.XANH_LA,
-                            font=("Segoe UI", 9, "bold"), anchor="w")
-        _lbl_cur.pack(fill="x", pady=(6, 0))
-        _cur_lbl_holder["w"] = _lbl_cur
+        cur = self.settings.get("export_format", "excel")
+        cur_label = {"excel": "Excel (.xlsx)", "word": "Word (.doc)",
+                     "pdf":   "PDF (.pdf)",    "html": "HTML (.html)"}.get(cur, cur)
+        lbl = tk.Label(box, text=f"Đang chọn: {cur_label}",
+                       bg=self.NEN2, fg=self.XANH_LA,
+                       font=("Segoe UI", 9, "bold"), anchor="w")
+        lbl.pack(fill="x", pady=(6, 0))
+        holder["w"] = lbl
 
-        # ── GitHub info ──
-        _gh_info = _read_gh_config() or {}
-        _gh_has_token = bool(_gh_info.get("token"))
-        _gh_token_status = "✓ Đã có" if _gh_has_token else "✗ Chưa có"
-        _gh_token_color  = self.XANH_LA if _gh_has_token else self.DO
-
-        tk.Label(inner_cfg, text="☁  GitHub", bg=self.NEN, fg=self.TIM,
+    # ─────────────────────────────────────────────────────
+    def _build_settings_github_info(self, parent):
+        gh = _read_gh_config() or {}
+        has_token = bool(gh.get("token"))
+        tk.Label(parent, text="☁  GitHub", bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(12, 4))
-
-        gh_box = tk.Frame(inner_cfg, bg=self.NEN2)
-        gh_box.pack(fill="x", pady=(0, 6))
-
+        box = tk.Frame(parent, bg=self.NEN2)
+        box.pack(fill="x", pady=(0, 6))
         for lbl, val, color in [
-            ("Owner",  _gh_info.get("owner",  "(chưa có)"), self.CHU),
-            ("Repo",   _gh_info.get("repo",   "(chưa có)"), self.CHU),
-            ("Branch", _gh_info.get("branch", "main"),      self.CHU),
-            ("Path",   _gh_info.get("path",   "output.txt"),self.CHU),
-            ("Token",  _gh_token_status,                    _gh_token_color),
+            ("Owner",  gh.get("owner",  "(chưa có)"), self.CHU),
+            ("Repo",   gh.get("repo",   "(chưa có)"), self.CHU),
+            ("Branch", gh.get("branch", "main"),      self.CHU),
+            ("Path",   gh.get("path",   "output.txt"),self.CHU),
+            ("Token",  "✓ Đã có" if has_token else "✗ Chưa có",
+             self.XANH_LA if has_token else self.DO),
         ]:
-            row = tk.Frame(gh_box, bg=self.NEN2, padx=12, pady=6)
+            row = tk.Frame(box, bg=self.NEN2, padx=12, pady=6)
             row.pack(fill="x")
             tk.Label(row, text=lbl, bg=self.NEN2, fg=self.CHU_MO,
                      font=("Segoe UI", 9), anchor="w", width=10
@@ -4139,20 +4754,22 @@ class UngDungQuanLy:
                      font=("Consolas", 9), anchor="w"
                      ).pack(side="left", fill="x", expand=True)
 
-        # Đường dẫn file
-        tk.Label(inner_cfg, text="📁  Đường dẫn file", bg=self.NEN, fg=self.TIM,
+    # ─────────────────────────────────────────────────────
+    def _build_settings_paths(self, parent):
+        tk.Label(parent, text="📁  Đường dẫn file", bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(12, 4))
-        path_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=10)
-        path_box.pack(fill="x", pady=(0, 6))
+        box = tk.Frame(parent, bg=self.NEN2, padx=12, pady=10)
+        box.pack(fill="x", pady=(0, 6))
         for label, path in [
             ("Data",          DATA_FILE),
             ("Backup",        os.path.basename(DATA_FILE) + ".bak.*"),
             ("Settings",      SETTINGS_FILE),
-            ("GitHub config", GH_CONFIG_FILE if os.path.exists(GH_CONFIG_FILE) else "(không có)"),
+            ("GitHub config", GH_CONFIG_FILE if os.path.exists(GH_CONFIG_FILE)
+                              else "(không có)"),
             ("Log",           LOG_FILE),
         ]:
-            row = tk.Frame(path_box, bg=self.NEN2)
+            row = tk.Frame(box, bg=self.NEN2)
             row.pack(fill="x", pady=2)
             tk.Label(row, text=f"• {label}:", bg=self.NEN2, fg=self.CHU_MO,
                      font=("Segoe UI", 9), anchor="w", width=14
@@ -4175,37 +4792,34 @@ class UngDungQuanLy:
             except Exception as e:
                 self.thong_bao(f"✗ Không mở được: {e}", self.DO)
 
-        tk.Button(inner_cfg, text="📂  Mở thư mục chứa file",
+        tk.Button(parent, text="📂  Mở thư mục chứa file",
                   bg=self.NEN3, fg=self.CHU,
-                  activebackground=self.XANH_DUONG, activeforeground="#1e1e2e",
+                  activebackground=self.XANH_DUONG,
+                  activeforeground="#1e1e2e",
                   relief="flat", cursor="hand2",
-                  font=("Segoe UI", 9, "bold"), padx=15, pady=6, bd=0,
-                  command=open_folder
+                  font=("Segoe UI", 9, "bold"),
+                  padx=15, pady=6, bd=0, command=open_folder
                   ).pack(pady=(6, 20))
-        # ═══════════════════════════════════════════════════════
-        # CÔNG CỤ — Token / Update / History
-        # ═══════════════════════════════════════════════════════
-        tk.Label(inner_cfg, text="🛠  Công cụ & GitHub",
+
+    # ─────────────────────────────────────────────────────
+    def _build_settings_tools(self, parent, close_fn):
+        tk.Label(parent, text="🛠  Công cụ & GitHub",
                  bg=self.NEN, fg=self.TIM,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(fill="x", pady=(12, 4))
+        box = tk.Frame(parent, bg=self.NEN2, padx=12, pady=10)
+        box.pack(fill="x", pady=(0, 20))
 
-        tools_box = tk.Frame(inner_cfg, bg=self.NEN2, padx=12, pady=10)
-        tools_box.pack(fill="x", pady=(0, 20))
-
-        def _wrap_close(fn):
-            """Đóng settings rồi gọi fn sau khi panel biến mất."""
-            def _wrapped():
-                try:
-                    close_settings()
-                except Exception:
-                    pass
+        def _wrap(fn):
+            def _w():
+                try: close_fn()
+                except Exception as e: log_warn(f"close fail: {e}")
                 self.root.after(220, fn)
-            return _wrapped
+            return _w
 
-        def _tool_btn(text, cmd, bg, hover, first=False):
+        def _btn(text, cmd, bg, hover, first=False):
             fg = "#1e1e2e" if bg not in (self.NEN3, self.NEN2) else self.CHU
-            b = tk.Button(tools_box, text=text, command=cmd,
+            b = tk.Button(box, text=text, command=cmd,
                           bg=bg, fg=fg,
                           activebackground=hover,
                           activeforeground="#1e1e2e",
@@ -4215,32 +4829,28 @@ class UngDungQuanLy:
             b.pack(fill="x", pady=(0 if first else 6, 0))
             return b
 
-        _tool_btn("🔑  Đổi token GitHub",
-                  _wrap_close(self.doi_token_github),
-                  self.XANH_DUONG, self.XANH_DUONG_H, first=True)
+        _btn("🔑  Đổi token GitHub",
+             _wrap(self.doi_token_github),
+             self.XANH_DUONG, self.XANH_DUONG_H, first=True)
+        _btn("📨  Cấu hình Zalo Bot",
+             _wrap(self.mo_dialog_zalo),
+             "#0068FF", "#3388FF")
+        _btn("🔃  Kiểm tra cập nhật",
+             _wrap(lambda: self.kiem_tra_cap_nhat(force=True)),
+             "#5E35B1", "#7E57C2")
 
-        _tool_btn("🔃  Kiểm tra cập nhật",
-                  _wrap_close(lambda: self.kiem_tra_cap_nhat(force=True)),
-                  "#5E35B1", "#7E57C2")
-
-        # ═══════════════════════════════════════════════════════
-        # TAB 3 — UPDATE LOG
-        # ═══════════════════════════════════════════════════════
-        f_changelog = tk.Frame(container, bg=self.NEN)
-        tab_frames["changelog"] = f_changelog
-
-        log_frame = tk.Frame(f_changelog, bg=self.NEN)
-        log_frame.pack(fill="both", expand=True)
-        txt = tk.Text(log_frame, bg=self.NEN2, fg=self.CHU,
+    # ─────────────────────────────────────────────────────
+    def _build_settings_tab_changelog(self, parent):
+        frame = tk.Frame(parent, bg=self.NEN)
+        frame.pack(fill="both", expand=True)
+        txt = tk.Text(frame, bg=self.NEN2, fg=self.CHU,
                        insertbackground=self.CHU, relief="flat",
                        font=("Consolas", 9), wrap="word",
                        padx=12, pady=10)
-        sb_log = ttk.Scrollbar(log_frame, orient="vertical",
-                                command=txt.yview)
-        txt.configure(yscrollcommand=sb_log.set)
+        sb = ttk.Scrollbar(frame, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
         txt.pack(side="left", fill="both", expand=True)
-        sb_log.pack(side="right", fill="y")
-
+        sb.pack(side="right", fill="y")
         txt.tag_configure("version", foreground=self.XANH_LA,
                           font=("Segoe UI", 12, "bold"))
         txt.tag_configure("date",    foreground=self.CHU_MO,
@@ -4251,42 +4861,7 @@ class UngDungQuanLy:
                           font=("Consolas", 9))
         txt.tag_configure("sep",     foreground=self.NEN3)
 
-        CHANGELOG = [
-            ("v2.1", "2026-10-13", [
-                ("section", "🆕 Tính năng mới"),
-                ("item", "  • Thêm trường Tổ (1-4) cho HS"),
-                ("item", "  • Cột Tổ trong bảng danh sách"),
-                ("item", "  • Filter theo Tổ"),
-                ("item", "  • Hiển thị Tổ trong bảng điểm danh (T1 · Tên)"),
-                ("item", "  • Xuất CSV có cột Tổ"),
-                ("item", "  • Nút Thêm/Sửa HS gộp chung"),
-                ("item", "  • Settings hiển thị inline (không cửa sổ rời)"),
-            ]),
-            ("v2.0", "2026-10-12", [
-                ("section", "✨ Animation"),
-                ("item", "  • Window fade-in, slide panel, typewriter"),
-                ("item", "  • Progress bar, row flash, confetti"),
-                ("sep",  ""),
-                ("section", "🐛 Fix bug"),
-                ("item", "  • Fix key int/string trong weeks"),
-                ("item", "  • Fix merge data không mất dữ liệu"),
-                ("item", "  • Fix UI đơ bằng threading"),
-                ("sep",  ""),
-                ("section", "🚀 Tính năng"),
-                ("item", "  • Pull → Merge → Push tự động"),
-                ("item", "  • Backup tự động"),
-                ("item", "  • Lịch sử thay đổi GitHub"),
-                ("item", "  • Undo/Redo (Ctrl+Z / Ctrl+Y)"),
-                ("item", "  • Thống kê, Export CSV"),
-            ]),
-            ("v1.0", "2026-10-01", [
-                ("section", "📦 Bản đầu tiên"),
-                ("item", "  • Quản lý HS 35 tuần, 2 học kỳ"),
-                ("item", "  • Điểm danh / Lý do / Lỗi vi phạm"),
-                ("item", "  • Sync GitHub, UI Catppuccin"),
-            ]),
-        ]
-        for i, (ver, date, items) in enumerate(CHANGELOG):
+        for i, (ver, date, items) in enumerate(CHANGELOG_ENTRIES):
             if i > 0:
                 txt.insert("end", "\n" + "─" * 55 + "\n\n", "sep")
             txt.insert("end", f"{ver}\n", "version")
@@ -4295,56 +4870,23 @@ class UngDungQuanLy:
                 txt.insert("end", line + "\n", tag)
         txt.config(state="disabled")
 
-        # ═══════════════════════════════════════════════════════
-        # Footer
-        # ═══════════════════════════════════════════════════════
+    # ─────────────────────────────────────────────────────
+    def _build_settings_footer(self, card, close_fn):
         footer = tk.Frame(card, bg=self.NEN2, height=52)
         footer.pack(fill="x", side="bottom")
         footer.pack_propagate(False)
-        tk.Label(footer, text="ManagementSystem v2.3 — Py 3.12+ / Tkinter",
+        tk.Label(footer,
+                 text=f"ManagementSystem v{APP_VERSION} — Py 3.12+ / Tkinter",
                  bg=self.NEN2, fg=self.CHU_MO,
-                 font=("Segoe UI", 8, "italic")).pack(side="left", padx=15)
-        tk.Button(footer, text="Đóng", command=lambda: close_settings(),
+                 font=("Segoe UI", 8, "italic")
+                 ).pack(side="left", padx=15)
+        tk.Button(footer, text="Đóng", command=close_fn,
                   bg=self.XANH_DUONG, fg="#1e1e2e",
                   activebackground=self.XANH_DUONG_H,
                   relief="flat", cursor="hand2",
                   font=("Segoe UI", 9, "bold"),
                   padx=20, pady=5, bd=0
                   ).pack(side="right", padx=15, pady=10)
-
-        close_btn.config(command=close_settings)
-
-        # Mở tab mặc định
-        switch_tab("effects")
-
-        # ═══ GLOW-IN — viền card sáng dần từ NEN → XANH_DUONG ═══
-        if self.settings.get("enable_animation", True):
-            card.configure(highlightbackground=self.NEN)
-
-            _from_rgb = _hex_to_rgb(self.NEN)
-            _to_rgb   = _hex_to_rgb(self.XANH_DUONG)
-
-            def _glow_step(i=0, total=14):
-                if i > total:
-                    try:
-                        card.configure(highlightbackground=self.XANH_DUONG)
-                    except Exception:
-                        pass
-                    return
-                k = i / total
-                k = 1 - (1 - k) ** 3        # ease-out cubic
-                try:
-                    rgb = tuple(_lerp(_from_rgb[j], _to_rgb[j], k)
-                                for j in range(3))
-                    card.configure(highlightbackground=_rgb_to_hex(rgb))
-                except Exception:
-                    return
-                self.root.after(16, lambda: _glow_step(i + 1, total))
-
-            self.root.after(30, lambda: _glow_step(0))
-
-        # Lưu hàm đóng để Esc gọi
-        self._close_settings_fn = close_settings
 
     # ═══ Style ═══
     def _cai_dat_style(self):
@@ -4528,14 +5070,16 @@ class UngDungQuanLy:
         self._tao_nut(form, "☁  Tải từ GitHub", self.keo_github,
                       self.XANH_DUONG, self.XANH_DUONG_H
                       ).pack(fill="x", padx=20, pady=(0, 8))
+        self._tao_nut(form, "📨  Gửi Zalo",
+                      lambda: self.gui_thong_bao_zalo(auto=False),
+                      "#0068FF", "#3388FF"
+                      ).pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📜  Lịch sử thay đổi", self.mo_lich_su,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📊  Thống kê", self.mo_thong_ke,
                       self.TIM, "#b58dfa").pack(fill="x", padx=20, pady=(0, 8))
         self._tao_nut(form, "📚  Xuất cả năm", self.xuat_excel_all,
                       "#1B5E20", "#2E7D32").pack(fill="x", padx=20, pady=(0, 8))
-        self._tao_nut(form, "🖨  In báo cáo", self.xuat_bao_cao_html,
-                      "#4527A0", "#5E35B1").pack(fill="x", padx=20, pady=(0, 8))
 
         self.nut_undo = self._tao_nut(
             form, "↩  Undo (Ctrl+Z)", self.undo,
@@ -4710,6 +5254,7 @@ class UngDungQuanLy:
         for ky, mau, label in [("✓", self.XANH_LA, "Có mặt"),
                                 ("✗", self.VANG,    "Có phép"),
                                 ("⊘", self.DO,      "Không phép"),
+                                ("·", self.CHU_MO,  "Chưa ĐD"),
                                 ("!", self.CAM,     "Có lỗi")]:
             tk.Label(chu_thich, text=f"{ky} {label}", bg=self.NEN2, fg=mau,
                      font=("Segoe UI", 8)).pack(side="left", padx=(0, 10))
@@ -4860,24 +5405,28 @@ class UngDungQuanLy:
         self._dirty = True
 
     def undo(self):
+        if not self._can_write(): return
         if not self.undo_stack.can_undo():
             self.thong_bao("Không có gì để undo", self.CHU_MO); return
         cur_snap = deepcopy(self.HocSinh)
         snap, label, _ = self.undo_stack.do_undo()
         self.undo_stack.push_redo(cur_snap, label)
         self.HocSinh = snap
+        self._dirty = True
         self._xoa_panel_ct()
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
         self.thong_bao(f"↩ Undo: {label}", self.VANG)
 
     def redo(self):
+        if not self._can_write(): return
         if not self.undo_stack.can_redo():
             self.thong_bao("Không có gì để redo", self.CHU_MO); return
         cur_snap = deepcopy(self.HocSinh)
         snap, label, _ = self.undo_stack.do_redo()
-        self.undo_stack.push(cur_snap, label)
+        self.undo_stack.push_undo_keep_redo(cur_snap, label)
         self.HocSinh = snap
+        self._dirty = True
         self._xoa_panel_ct()
         self.cap_nhat_bang()
         self.cap_nhat_diem_danh()
@@ -4885,7 +5434,9 @@ class UngDungQuanLy:
 
     # ═══ GitHub Actions ═══
     def keo_github(self):
-        if not self._can_write(): return          # ← THÊM DÒNG NÀY
+        if self._saving:
+            self.thong_bao("⏳ Đang lưu lên GitHub, đợi vài giây", self.VANG)
+            return
         global GH_CONFIG
         if not GH_CONFIG:
             self.thong_bao("⚠ Chưa có github_config.json", self.VANG); return
@@ -4955,6 +5506,8 @@ class UngDungQuanLy:
             self.cap_nhat_bang()
             self.cap_nhat_diem_danh()
             self._xoa_panel_ct()
+            self._base = deepcopy(self.HocSinh)
+            self._dirty = False
             self.thong_bao(f"✓ Đã tải {len(self.HocSinh)} HS từ GitHub", self.XANH_LA)
 
         self._async(task, on_success=on_done)
@@ -5157,7 +5710,7 @@ class UngDungQuanLy:
         self._xoa_panel_ct()
         self.thong_bao(f"✓ Đã xóa {len(ds_ma)} HS (Ctrl+Z để hoàn tác)", self.XANH_LA)
 
-    def luu_ngay(self):
+    def luu_ngay(self, auto=False):
         if not self._can_write(): return          # ← THÊM DÒNG NÀY
         if self._saving:
             self.thong_bao("⏳ Đang lưu...", self.VANG)
@@ -5170,21 +5723,14 @@ class UngDungQuanLy:
         local_snapshot = deepcopy(self.HocSinh)
         ly_do_md = self.settings["ly_do_mac_dinh"]
 
-        # Snapshot tham chiếu SAU auto-fill (giống ghi_file sẽ làm)
-        # để so sánh chính xác, tránh false positive
+        # Bản local gốc để so sánh với bản merged (cảnh báo máy khác sửa)
         local_ref = deepcopy(local_snapshot)
-        for sid_r, d_r in local_ref.items():
-            for t_r, w_r in d_r.get("weeks", {}).items():
-                att_r = w_r.get("attendance", {})
-                rea_r = w_r.setdefault("reasons", {})
-                for day_r in THU:
-                    if (not att_r.get(day_r, False)
-                            and not rea_r.get(day_r, "").strip()):
-                        rea_r[day_r] = ly_do_md
+        base_snapshot = deepcopy(getattr(self, "_base", None))
 
         def task():
             return ghi_file(local_snapshot, ly_do_md, DATA_FILE,
-                            backup_count=self.settings["backup_count"])
+                            backup_count=self.settings["backup_count"],
+                            base=base_snapshot)
 
         def on_done(res):
             ok_local, ok_gh, err, merged = res
@@ -5248,6 +5794,24 @@ class UngDungQuanLy:
                 self.cap_nhat_diem_danh()
                 log_info(f"UI refresh với {len(self.HocSinh)} HS sau merge")
 
+            # ── Lưu thất bại thì giữ cờ dirty để auto-save thử lại ──
+            if not (ok_local and (ok_gh or not GH_CONFIG)):
+                self._dirty = True
+
+            # ── Cập nhật base cho lần merge 3 chiều kế tiếp ──
+            if ok_gh:
+                self._base = deepcopy(self.HocSinh)
+
+            # ── Gửi Zalo nếu bật (chỉ khi bấm Lưu tay, không phải auto-save) ──
+            if (ok_local
+                    and not auto
+                    and self.settings.get("zalo_enabled", False)
+                    and self.settings.get("zalo_notify_on_save", True)):
+                try:
+                    self.gui_thong_bao_zalo(auto=True)
+                except Exception as e:
+                    log_warn(f"Auto zalo fail: {e}")
+
             n = len(self.HocSinh)
             if ok_local and ok_gh:
                 self.thong_bao(f"✓ Pull-merge-push {n} HS lên GitHub", self.XANH_LA)
@@ -5269,7 +5833,7 @@ class UngDungQuanLy:
                 except Exception: pass
                 self._tw_job = None
             self._slide_busy       = False
-            self._dirty = False
+            self._dirty = True
             self._stop_progress()
             self.thong_bao(f"✗ Lỗi: {e}", self.DO)
 
@@ -5446,11 +6010,10 @@ class UngDungQuanLy:
     def _ky_hieu_o(self, ma, day):
         w = self._du_lieu_tuan(ma)
         if not w: return ""
-        if w["attendance"].get(day, False):
-            base = "✓"
-        else:
-            reason = w["reasons"].get(day, "").strip()
-            base = "✗" if (reason and reason != self.settings["ly_do_mac_dinh"]) else "⊘"
+        loai = phan_loai_o(w["attendance"].get(day, False),
+                           w["reasons"].get(day, ""),
+                           self.settings["ly_do_mac_dinh"])
+        base = {"cm": "✓", "vp": "✗", "vkp": "⊘", "chua": "·"}[loai]
         err = w["errors"].get(day, "").strip()
         return f"{base}!" if err else base
 
@@ -5570,8 +6133,8 @@ class UngDungQuanLy:
             self.o_ly_do.config(state="disabled")
         else:
             if not reason.strip():
+                # Chỉ gợi ý trong ô nhập, KHÔNG ghi vào dữ liệu
                 reason = self.settings["ly_do_mac_dinh"]
-                w["reasons"][day] = reason
             self.tieu_de_ct.config(
                 text=f"👁 {d['name']} ({d['class']}) — {tuan_str}",
                 fg=self.XANH_DUONG, font=("Segoe UI", 10, "bold"))
@@ -5850,6 +6413,8 @@ class UngDungQuanLy:
             w = self._du_lieu_tuan(ma)
             if w:
                 for day in THU:
+                    if day in NGAY_KHONG_HOC:
+                        continue
                     w["attendance"][day] = True
                     w["reasons"][day] = ""
         self.cap_nhat_diem_danh()
@@ -5871,6 +6436,8 @@ class UngDungQuanLy:
             w = self._du_lieu_tuan(ma)
             if w:
                 for day in THU:
+                    if day in NGAY_KHONG_HOC:
+                        continue
                     w["attendance"][day] = False
                     w["reasons"][day] = self.settings["ly_do_mac_dinh"]
         self.cap_nhat_diem_danh()
@@ -6041,7 +6608,8 @@ class UngDungQuanLy:
                            anchor="w", fill=self.CHU_MO,
                            font=("Segoe UI", 9, "italic"))
 
-        top = sorted(rows, key=lambda r: r["rate"])[:15]
+        top = sorted([r for r in rows if r["total"] > 0],
+                     key=lambda r: r["rate"])[:15]
         yy = y3 + 46
         for r in top:
             name_disp = r["name"]
@@ -6097,16 +6665,33 @@ class UngDungQuanLy:
             self._xuat_xls_html()
 
     def xuat_excel_all(self):
-        """Xuất cả năm theo định dạng đã chọn trong Settings."""
+        """Xuất báo cáo — LUÔN hỏi kỳ trước khi xuất."""
         if not self.HocSinh:
             self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
 
-        fmt = self.settings.get("export_format", "excel")
-        if fmt == "word":
-            self._xuat_word_all()
+        # ═══ BƯỚC 1: HỎI KỲ ═══
+        period = self._chon_ky_thong_ke(
+            parent_title="Chọn kỳ xuất báo cáo")
+        if not period:
             return
 
-        # Mặc định: Excel
+        p_label  = _period_label(period)
+        p_suffix = _period_suffix(period)
+        self.thong_bao(f"📚 Đã chọn: {p_label}", self.XANH_DUONG)
+
+        # ═══ BƯỚC 2: DISPATCH ═══
+        fmt = self.settings.get("export_format", "excel")
+        if fmt == "word":
+            self._xuat_word_all(period=period)
+            return
+        if fmt == "pdf":
+            self._xuat_pdf_all(period=period)
+            return
+        if fmt == "html":
+            self.xuat_bao_cao_html(period=period)
+            return
+
+        # ═══ Excel ═══
         if not OPENPYXL_OK:
             messagebox.showwarning(
                 "Cần openpyxl",
@@ -6117,29 +6702,26 @@ class UngDungQuanLy:
         path = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            initialfile="diem_danh_ca_nam.xlsx")
+            initialfile=f"bao_cao_{p_suffix}.xlsx")
         if not path: return
 
-        # Snapshot để thread đọc — tránh race condition
         hs_snapshot = deepcopy(self.HocSinh)
         ly_do_md = self.settings["ly_do_mac_dinh"]
 
         self._start_progress()
-        self.thong_bao(
-            f"⏳ Đang xuất {TONG_TUAN} tuần + Tổng hợp...", self.XANH_DUONG)
+        self.thong_bao(f"⏳ Đang xuất Excel ({p_label})...", self.XANH_DUONG)
 
         def task():
-            return _build_xlsx_all(hs_snapshot, path, ly_do_md)
+            return _build_xlsx_all(hs_snapshot, path, ly_do_md, period)
 
         def on_done(ok):
             self._stop_progress()
             if ok:
                 self.thong_bao(
-                    f"✓ Đã xuất cả năm: {os.path.basename(path)}",
+                    f"✓ Đã xuất Excel: {os.path.basename(path)} ({p_label})",
                     self.XANH_LA)
             else:
-                self.thong_bao(
-                    "✗ Lỗi xuất — xem app.log", self.DO)
+                self.thong_bao("✗ Lỗi xuất — xem app.log", self.DO)
 
         def on_err(e):
             self._stop_progress()
@@ -6147,41 +6729,37 @@ class UngDungQuanLy:
 
         self._async(task, on_success=on_done, on_error=on_err)
 
-    def _xuat_word_all(self):
-        """Xuất báo cáo cả năm dạng Word (.doc)."""
+    def _xuat_word_all(self, period=None):
+        """Xuất báo cáo Word. period=None → hỏi; có → xuất luôn."""
+        if period is None:
+            period = self._chon_ky_thong_ke(parent_title="Chọn kỳ xuất Word")
+            if not period: return
+        
+        p_label  = _period_label(period)
+        p_suffix = _period_suffix(period)
+        
         path = filedialog.asksaveasfilename(
             defaultextension=".doc",
-            filetypes=[("Word files", "*.doc"),
-                       ("All files", "*.*")],
-            initialfile="bao_cao_ca_nam.doc")
+            filetypes=[("Word files", "*.doc"), ("All files", "*.*")],
+            initialfile=f"bao_cao_{p_suffix}.doc")
         if not path: return
 
         hs_snapshot = deepcopy(self.HocSinh)
         ly_do_md = self.settings["ly_do_mac_dinh"]
 
         self._start_progress()
-        self.thong_bao("⏳ Đang xuất Word...", self.XANH_DUONG)
+        self.thong_bao(f"⏳ Đang xuất Word ({p_label})...", self.XANH_DUONG)
 
         def task():
-            return _build_word_report(hs_snapshot, path, ly_do_md)
+            return _build_word_report(hs_snapshot, path, ly_do_md, period)
 
         def on_done(ok):
             self._stop_progress()
             if ok:
                 self.thong_bao(
-                    f"✓ Đã xuất Word: {os.path.basename(path)}",
+                    f"✓ Đã xuất Word: {os.path.basename(path)} ({p_label})",
                     self.XANH_LA)
-                try:
-                    if sys.platform == "win32":
-                        os.startfile(path)
-                    elif sys.platform == "darwin":
-                        import subprocess
-                        subprocess.Popen(["open", path])
-                    else:
-                        import subprocess
-                        subprocess.Popen(["xdg-open", path])
-                except Exception as e:
-                    log_warn(f"Không mở được Word: {e}")
+                self._mo_file_bang_os(path)
             else:
                 self.thong_bao("✗ Lỗi xuất Word — xem app.log", self.DO)
 
@@ -6191,45 +6769,471 @@ class UngDungQuanLy:
 
         self._async(task, on_success=on_done, on_error=on_err)
 
-
-    def xuat_bao_cao_html(self):
-        """Xuất báo cáo HTML (cả năm) — mở bằng trình duyệt, Ctrl+P để in."""
+    # ─────────────────────────────────────────────────────
+    def _xuat_pdf_all(self, period=None):
+        """Xuất báo cáo PDF. period=None → hỏi; có → xuất luôn."""
         if not self.HocSinh:
             self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
 
+        if not REPORTLAB_OK:
+            messagebox.showwarning(
+                "Cần reportlab",
+                "Tính năng xuất PDF cần thư viện reportlab.\n\n"
+                "Cài đặt: pip install reportlab")
+            return
+
+        if period is None:
+            period = self._chon_ky_thong_ke(parent_title="Chọn kỳ xuất PDF")
+            if not period:
+                return
+
+        period_suffix = _period_suffix(period)
+        default_name = f"bao_cao_{period_suffix}.pdf"
+
         path = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
-            initialfile="bao_cao_chuyen_can.html")
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            initialfile=default_name)
         if not path: return
 
         hs_snapshot = deepcopy(self.HocSinh)
         ly_do_md = self.settings["ly_do_mac_dinh"]
 
         self._start_progress()
-        self.thong_bao("⏳ Đang xuất báo cáo HTML...", self.XANH_DUONG)
+        self.thong_bao("⏳ Đang xuất PDF...", self.XANH_DUONG)
 
         def task():
-            return _build_html_report(hs_snapshot, path, ly_do_md)
+            return _build_pdf_report(hs_snapshot, path, ly_do_md, period)
 
         def on_done(ok):
             self._stop_progress()
             if ok:
                 self.thong_bao(
-                    f"✓ Đã xuất báo cáo: {os.path.basename(path)}",
+                    f"✓ Đã xuất PDF: {os.path.basename(path)}",
                     self.XANH_LA)
-                # Mở bằng trình duyệt
-                try:
-                    if sys.platform == "win32":
-                        os.startfile(path)
-                    elif sys.platform == "darwin":
-                        import subprocess
-                        subprocess.Popen(["open", path])
-                    else:
-                        import subprocess
-                        subprocess.Popen(["xdg-open", path])
-                except Exception as e:
-                    log_warn(f"Không mở được HTML: {e}")
+                if self.settings.get("pdf_open_after_export", True):
+                    self._mo_file_bang_os(path)
+            else:
+                self.thong_bao("✗ Lỗi xuất PDF — xem app.log", self.DO)
+
+        def on_err(e):
+            self._stop_progress()
+            self.thong_bao(f"✗ Lỗi: {e}", self.DO)
+
+        self._async(task, on_success=on_done, on_error=on_err)
+
+    def _mo_file_bang_os(self, path):
+        """Mở file bằng app mặc định của OS."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", path])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            log_warn(f"Không mở được file: {e}")
+
+    # ─────────────────────────────────────────────────────
+    def gui_thong_bao_zalo(self, auto=False):
+        """
+        Gửi thông báo vắng cho tuần hiện tại lên Zalo.
+        auto=True → không hiện messagebox kết quả khi thất bại.
+        """
+        if not self._can_write():
+            return
+        token = self.settings.get("zalo_bot_token", "").strip()
+        chat_id = self.settings.get("zalo_chat_id", "").strip()
+        if not token or not chat_id:
+            if not auto:
+                ans = messagebox.askyesno(
+                    "Chưa cấu hình Zalo",
+                    "Bạn chưa nhập Bot Token / Chat ID.\n\n"
+                    "Mở Settings → Tab 'Cấu hình khác' → 'Zalo' "
+                    "để cấu hình.\n\nMở Settings bây giờ?")
+                if ans:
+                    self.mo_settings_inline()
+            return
+
+        tuan = self.tuan_hien_tai
+        min_ab = int(self.settings.get("zalo_min_absent", 1))
+        msg = _build_zalo_absent_message(
+            self.HocSinh, tuan, self.settings["ly_do_mac_dinh"], min_ab)
+        if not msg:
+            if not auto:
+                self.thong_bao(
+                    f"✓ Tuần {tuan} không có HS vắng ≥ {min_ab} buổi",
+                    self.XANH_LA)
+            return
+
+        self.thong_bao("📨 Đang gửi Zalo...", self.XANH_DUONG)
+
+        def task():
+            return zalo_send(token, chat_id, msg)
+
+        def on_done(res):
+            ok, err = res
+            if ok:
+                self.settings["zalo_last_sent"] = _time.time()
+                save_settings(self.settings)
+                self.thong_bao("✓ Đã gửi thông báo Zalo", self.XANH_LA)
+            else:
+                log_warn(f"Zalo send fail: {err}")
+                if not auto:
+                    messagebox.showerror(
+                        "Lỗi gửi Zalo",
+                        f"Không gửi được tin nhắn.\n\nLỗi: {err}\n\n"
+                        "Kiểm tra:\n"
+                        "  • Bot Token đúng chưa?\n"
+                        "  • Chat ID đúng chưa?\n"
+                        "  • Đã /start bot trong Zalo chưa?\n"
+                        "  • Có kết nối Internet không?")
+                self.thong_bao(f"✗ Zalo: {err}", self.DO)
+
+        self._async(task, on_success=on_done)
+
+    def mo_dialog_zalo(self):
+        """Dialog cấu hình Zalo Bot + test."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("📨 Cấu hình Zalo Bot")
+        dlg.configure(bg=self.NEN)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+
+        W, H = 640, 560
+        try:
+            self.root.update_idletasks()
+            x = (self.root.winfo_screenwidth() // 2) - (W // 2)
+            y = (self.root.winfo_screenheight() // 2) - (H // 2)
+            dlg.geometry(f"{W}x{H}+{x}+{y}")
+        except Exception:
+            dlg.geometry(f"{W}x{H}")
+
+        header = tk.Frame(dlg, bg=self.NEN2, height=56)
+        header.pack(fill="x"); header.pack_propagate(False)
+        tk.Label(header, text="📨  CẤU HÌNH ZALO BOT",
+                 bg=self.NEN2, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 13, "bold")
+                 ).pack(side="left", padx=18, pady=14)
+
+        body = tk.Frame(dlg, bg=self.NEN)
+        body.pack(fill="both", expand=True, padx=22, pady=14)
+
+        guide = (
+            "📋 Cách lấy Bot Token & Chat ID:\n\n"
+            "1. Truy cập: bot.zaloplatforms.com\n"
+            "2. Đăng nhập Zalo → Tạo Bot mới\n"
+            "3. Sao chép Bot Token (dạng chuỗi dài)\n"
+            "4. Nhắn /start cho Bot trên Zalo\n"
+            "5. Chat ID: mở Bot → copy từ URL hoặc dùng API getUpdates\n"
+            "6. Dán cả 2 vào ô dưới → bấm 'Test'"
+        )
+        tk.Label(body, text=guide, bg=self.NEN, fg=self.CHU_MO,
+                 font=("Segoe UI", 9), anchor="w", justify="left"
+                 ).pack(fill="x", pady=(0, 14))
+
+        tk.Label(body, text="Bot Token:",
+                 bg=self.NEN, fg=self.CHU,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(0, 4))
+        token_var = tk.StringVar(
+            value=self.settings.get("zalo_bot_token", ""))
+        e_token = tk.Entry(body, textvariable=token_var,
+                           bg=self.NEN3, fg=self.CHU,
+                           insertbackground=self.CHU, relief="flat",
+                           font=("Consolas", 10), show="●")
+        e_token.pack(fill="x", ipady=6)
+
+        tk.Label(body, text="Chat ID:",
+                 bg=self.NEN, fg=self.CHU,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(12, 4))
+        chat_var = tk.StringVar(
+            value=self.settings.get("zalo_chat_id", ""))
+        tk.Entry(body, textvariable=chat_var,
+                 bg=self.NEN3, fg=self.CHU,
+                 insertbackground=self.CHU, relief="flat",
+                 font=("Consolas", 10)
+                 ).pack(fill="x", ipady=6)
+
+        # Toggle bật/tắt
+        en_var = tk.BooleanVar(value=self.settings.get("zalo_enabled", False))
+        tk.Checkbutton(body, text="  Bật thông báo Zalo",
+                       variable=en_var,
+                       bg=self.NEN, fg=self.CHU,
+                       selectcolor=self.NEN3,
+                       activebackground=self.NEN,
+                       activeforeground=self.CHU,
+                       font=("Segoe UI", 10),
+                       cursor="hand2"
+                       ).pack(anchor="w", pady=(14, 4))
+
+        notify_var = tk.BooleanVar(
+            value=self.settings.get("zalo_notify_on_save", True))
+        tk.Checkbutton(body, text="  Tự động gửi khi Save nếu có HS vắng",
+                       variable=notify_var,
+                       bg=self.NEN, fg=self.CHU,
+                       selectcolor=self.NEN3,
+                       activebackground=self.NEN,
+                       activeforeground=self.CHU,
+                       font=("Segoe UI", 10),
+                       cursor="hand2"
+                       ).pack(anchor="w", pady=(0, 4))
+
+        # Ngưỡng vắng
+        row_thr = tk.Frame(body, bg=self.NEN)
+        row_thr.pack(fill="x", pady=(8, 0))
+        tk.Label(row_thr, text="Gửi khi vắng ≥",
+                 bg=self.NEN, fg=self.CHU,
+                 font=("Segoe UI", 10)).pack(side="left")
+        min_var = tk.IntVar(value=int(self.settings.get("zalo_min_absent", 1)))
+        tk.Spinbox(row_thr, from_=1, to=7, textvariable=min_var,
+                   width=4, bg=self.NEN3, fg=self.CHU,
+                   insertbackground=self.CHU, relief="flat",
+                   font=("Consolas", 10)).pack(side="left", padx=6)
+        tk.Label(row_thr, text="buổi/tuần",
+                 bg=self.NEN, fg=self.CHU_MO,
+                 font=("Segoe UI", 10)).pack(side="left")
+
+        status_lbl = tk.Label(body, text="", bg=self.NEN, fg=self.CHU_MO,
+                               font=("Segoe UI", 9, "italic"), anchor="w")
+        status_lbl.pack(fill="x", pady=(10, 0))
+
+        # ── Footer ──
+        footer = tk.Frame(dlg, bg=self.NEN2, height=64)
+        footer.pack(fill="x", side="bottom"); footer.pack_propagate(False)
+
+        def on_save():
+            self.settings["zalo_bot_token"] = token_var.get().strip()
+            self.settings["zalo_chat_id"]   = chat_var.get().strip()
+            self.settings["zalo_enabled"]   = bool(en_var.get())
+            self.settings["zalo_notify_on_save"] = bool(notify_var.get())
+            try:
+                self.settings["zalo_min_absent"] = max(1, int(min_var.get()))
+            except Exception:
+                self.settings["zalo_min_absent"] = 1
+            save_settings(self.settings)
+            self.thong_bao("✓ Đã lưu cấu hình Zalo", self.XANH_LA)
+            dlg.destroy()
+
+        def on_test():
+            status_lbl.config(text="⏳ Đang test...", fg=self.XANH_DUONG)
+            dlg.update_idletasks()
+            tok = token_var.get().strip()
+            cid = chat_var.get().strip()
+            if not tok or not cid:
+                status_lbl.config(text="✗ Cần nhập đủ Token và Chat ID",
+                                   fg=self.DO)
+                return
+
+            def task():
+                return zalo_test(tok, cid)
+
+            def done(res):
+                ok, err = res
+                if ok:
+                    status_lbl.config(text="✓ Test thành công! Kiểm tra Zalo.",
+                                       fg=self.XANH_LA)
+                else:
+                    status_lbl.config(text=f"✗ Lỗi: {err}", fg=self.DO)
+
+            self._async(task, on_success=done)
+
+        tk.Button(footer, text="Đóng", command=dlg.destroy,
+                  bg=self.NEN3, fg=self.CHU,
+                  activebackground="#45475a",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=20, pady=6, bd=0
+                  ).pack(side="right", padx=(6, 18), pady=14)
+
+        tk.Button(footer, text="🧪 Test", command=on_test,
+                  bg=self.CAM, fg="#1e1e2e",
+                  activebackground="#f5a76c",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=20, pady=6, bd=0
+                  ).pack(side="right", padx=6, pady=14)
+
+        tk.Button(footer, text="💾 Lưu", command=on_save,
+                  bg=self.XANH_LA, fg="#1e1e2e",
+                  activebackground="#94e2d5",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=20, pady=6, bd=0
+                  ).pack(side="right", padx=6, pady=14)
+
+    def _chon_ky_thong_ke(self, parent_title="Chọn kỳ"):
+        """
+        Dialog chọn kỳ: Cả năm / HK1 / HK2 / Tháng 1..12.
+        Trả str hoặc None nếu hủy.
+        """
+        result = {"period": None}
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(parent_title)
+        dlg.configure(bg=self.NEN)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+
+        W, H = 520, 560          # ← SỬA: rộng hơn + cao hơn
+        try:
+            self.root.update_idletasks()
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - W) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - H) // 2
+            dlg.geometry(f"{W}x{H}+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            dlg.geometry(f"{W}x{H}")
+
+        # ── Header ──
+        header = tk.Frame(dlg, bg=self.NEN2, height=48)
+        header.pack(fill="x"); header.pack_propagate(False)
+        tk.Label(header, text="📅  CHỌN KỲ THỐNG KÊ",
+                 bg=self.NEN2, fg=self.XANH_DUONG,
+                 font=("Segoe UI", 12, "bold")
+                 ).pack(side="left", padx=16, pady=12)
+
+        # ── Footer (đặt TRƯỚC body để không bị cắt) ──
+        footer = tk.Frame(dlg, bg=self.NEN2, height=60)
+        footer.pack(fill="x", side="bottom")
+        footer.pack_propagate(False)
+
+        # ── Body ──
+        body = tk.Frame(dlg, bg=self.NEN)
+        body.pack(fill="both", expand=True, padx=20, pady=14)
+
+        var = tk.StringVar(value=self.settings.get("stats_period", "year"))
+        if not _period_available(var.get()):
+            var.set("year")
+
+        # ═══════════════════════════════════════════
+        # PHẦN 1: Cả năm / HK1 / HK2 — dạng nút to, dễ thấy
+        # ═══════════════════════════════════════════
+        tk.Label(body, text="KỲ LỚN:",
+                 bg=self.NEN, fg=self.TIM,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(0, 6))
+
+        for val, label in [
+            ("year", "📅  Cả năm học          (35 tuần)"),
+            ("hk1",  "📘  Học kỳ 1            (tuần 1–18)"),
+            ("hk2",  "📗  Học kỳ 2            (tuần 19–35)"),
+        ]:
+            tk.Radiobutton(body, text=label, variable=var, value=val,
+                           bg=self.NEN, fg=self.CHU,
+                           selectcolor=self.NEN3,
+                           activebackground=self.NEN,
+                           activeforeground=self.XANH_DUONG,
+                           font=("Segoe UI", 10),
+                           anchor="w", cursor="hand2"
+                           ).pack(fill="x", pady=1)
+
+        # ═══════════════════════════════════════════
+        # PHẦN 2: 12 tháng — dạng GRID 3 cột cho gọn
+        # ═══════════════════════════════════════════
+        tk.Frame(body, bg=self.NEN3, height=1).pack(fill="x", pady=(12, 8))
+        tk.Label(body, text="HOẶC CHỌN THEO THÁNG:",
+                 bg=self.NEN, fg=self.TIM,
+                 font=("Segoe UI", 10, "bold"), anchor="w"
+                 ).pack(fill="x", pady=(0, 6))
+
+        grid = tk.Frame(body, bg=self.NEN)
+        grid.pack(fill="x")
+
+        col_i = 0
+        row_i = 0
+        for m in range(1, 13):
+            if not _period_available(f"month_{m}"):
+                continue                          # ← bỏ tháng rỗng
+            tk.Radiobutton(
+                grid, text=f"🗓️ Tháng {m}",
+                variable=var, value=f"month_{m}",
+                bg=self.NEN, fg=self.CHU,
+                selectcolor=self.NEN3,
+                activebackground=self.NEN,
+                activeforeground=self.XANH_DUONG,
+                font=("Segoe UI", 9),
+                anchor="w", cursor="hand2"
+            ).grid(row=row_i, column=col_i, sticky="w",
+                   padx=(0, 10), pady=2)
+            col_i += 1
+            if col_i >= 3:
+                col_i = 0
+                row_i += 1
+
+        # ── Footer buttons ──
+        def on_ok():
+            result["period"] = var.get()
+            dlg.destroy()
+
+        def on_cancel():
+            dlg.destroy()
+
+        tk.Button(footer, text="✅  Xác nhận", command=on_ok,
+                  bg=self.XANH_LA, fg="#1e1e2e",
+                  activebackground="#94e2d5",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=22, pady=6, bd=0
+                  ).pack(side="right", padx=(6, 16), pady=14)
+
+        tk.Button(footer, text="❌  Hủy", command=on_cancel,
+                  bg=self.NEN3, fg=self.CHU,
+                  activebackground="#45475a",
+                  relief="flat", cursor="hand2",
+                  font=("Segoe UI", 10, "bold"),
+                  padx=22, pady=6, bd=0
+                  ).pack(side="right", padx=6, pady=14)
+
+        dlg.bind("<Escape>", lambda e: on_cancel())
+        dlg.bind("<Return>", lambda e: on_ok())
+
+        try:
+            dlg.grab_set()
+            dlg.focus_force()
+        except Exception:
+            pass
+
+        self.root.wait_window(dlg)
+        return result["period"]
+
+    def xuat_bao_cao_html(self, period=None):
+        """Xuất HTML. period=None → hỏi; có → xuất luôn."""
+        if not self.HocSinh:
+            self.thong_bao("⚠ Không có dữ liệu", self.VANG); return
+
+        if period is None:
+            period = self._chon_ky_thong_ke(parent_title="Chọn kỳ xuất HTML")
+            if not period: return
+
+        p_label  = _period_label(period)
+        p_suffix = _period_suffix(period)
+        
+        path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
+            initialfile=f"bao_cao_{p_suffix}.html")
+        if not path: return
+
+        hs_snapshot = deepcopy(self.HocSinh)
+        ly_do_md = self.settings["ly_do_mac_dinh"]
+
+        self._start_progress()
+        self.thong_bao(f"⏳ Đang xuất HTML ({p_label})...", self.XANH_DUONG)
+
+        def task():
+            return _build_html_report(hs_snapshot, path, ly_do_md,
+                                       tuan=None, period=period)
+
+        def on_done(ok):
+            self._stop_progress()
+            if ok:
+                self.thong_bao(
+                    f"✓ Đã xuất HTML: {os.path.basename(path)} ({p_label})",
+                    self.XANH_LA)
+                self._mo_file_bang_os(path)
             else:
                 self.thong_bao("✗ Lỗi xuất HTML — xem app.log", self.DO)
 
@@ -6367,6 +7371,7 @@ class UngDungQuanLy:
             self.thong_bao(
                 f"✓ Đã xuất Excel: {os.path.basename(path)}", self.XANH_LA)
         except Exception as e:
+            log_error(f"Xuất Excel tuần fail: {e}\n{traceback.format_exc()}")
             self.thong_bao(f"✗ Lỗi xuất Excel: {e}", self.DO)
 
     # ─────────────────────────────────────────────────────
@@ -6493,6 +7498,7 @@ class UngDungQuanLy:
             self.thong_bao(
                 f"✓ Đã xuất Excel: {os.path.basename(path)}", self.XANH_LA)
         except Exception as e:
+            log_error(f"Xuất XLS-HTML fail: {e}\n{traceback.format_exc()}")
             self.thong_bao(f"✗ Lỗi xuất Excel: {e}", self.DO)
 
     # ═══ Auto-save ═══
@@ -6501,10 +7507,11 @@ class UngDungQuanLy:
         self.root.after(ms, self._auto_save_tick)
 
     def _auto_save_tick(self):
-        if not self._can_write(): return          # ← THÊM DÒNG NÀY
+        if getattr(self, "read_only", False):
+            return
         if self._dirty and not self._saving:
-            log_info("Auto-save...")
-            self.luu_ngay()
+            log_info("Auto-save")
+            self.luu_ngay(auto=True)
         self._schedule_auto_save()
 
     def _start_progress(self):
@@ -6653,14 +7660,25 @@ class UngDungQuanLy:
 
         # ── Close ──
         def close():
+            # Destroy children trước
             for attr in ("_settings_cover", "_settings_overlay",
                          "_settings_shadow", "_settings_blur"):
                 w = getattr(self, attr, None)
                 if w is not None:
+                    try:
+                        for child in w.winfo_children():
+                            try: child.destroy()
+                            except Exception: pass
+                    except Exception: pass
                     try: w.destroy()
                     except Exception: pass
                     setattr(self, attr, None)
+            self._close_settings_fn = None
             try: self.root.update_idletasks()
+            except Exception: pass
+            try:
+                import gc
+                gc.collect()
             except Exception: pass
         self._close_settings_fn = close
 
@@ -6720,9 +7738,38 @@ class UngDungQuanLy:
                  bg=self.NEN2, fg=self.XANH_DUONG,
                  font=("Segoe UI", 14, "bold")).pack(side="left",
                                                      padx=18, pady=12)
-        tk.Label(header, text=f"{len(self.HocSinh)} học sinh · {TONG_TUAN} tuần",
+        # ── Dropdown chọn kỳ — THÊM MỚI ──
+        period_labels = [("year", "📅 Cả năm"),
+                         ("hk1",  "📘 HK1"),
+                         ("hk2",  "📗 HK2")]
+        period_labels += [
+            (f"month_{m}", f"🗓️ Tháng {m}")
+            for m in range(1, 13)
+            if _period_available(f"month_{m}")   # ← bỏ tháng rỗng
+        ]
+        period_var = tk.StringVar(
+            value=self.settings.get("stats_period", "year"))
+        # Nếu period đã lưu không còn available (vd: tháng bị loại)
+        # → fallback về "year"
+        valid_values = {val for val, _ in period_labels}
+        if period_var.get() not in valid_values:
+            period_var.set("year")
+
+        period_cbb = ttk.Combobox(
+            header, textvariable=period_var,
+            values=[lbl for _, lbl in period_labels],
+            state="readonly", width=12, font=("Segoe UI", 10))
+        period_cbb.pack(side="left", padx=(0, 10))
+        # Sync label → value
+        lbl_to_val = {lbl: val for val, lbl in period_labels}
+        val_to_lbl = {val: lbl for val, lbl in period_labels}
+        period_cbb.set(val_to_lbl[period_var.get()])
+
+        tk.Label(header,
+                 text=f"{len(self.HocSinh)} học sinh",
                  bg=self.NEN2, fg=self.CHU_MO,
                  font=("Segoe UI", 10)).pack(side="left", padx=(0, 10))
+
         close_btn = tk.Button(header, text="✕",
                               bg=self.NEN2, fg=self.CHU_MO,
                               activebackground=self.DO,
@@ -6733,129 +7780,131 @@ class UngDungQuanLy:
                               command=close_fn)
         close_btn.pack(side="right", padx=8, pady=8)
 
-        # ── Tính data ──
-        ly_do_md = self.settings["ly_do_mac_dinh"]
-        rows = []
-        tot_p = tot_e = tot_a = 0
-        by_class = {}
-        for ma, d in self.HocSinh.items():
-            n_p = n_e = n_a = n_err = 0
-            for t, w in d.get("weeks", {}).items():
-                att = w.get("attendance", {})
-                rea = w.get("reasons", {})
-                err = w.get("errors", {})
-                for day in THU:
-                    if att.get(day, False):
-                        n_p += 1
-                    else:
-                        r = rea.get(day, "").strip()
-                        if r and r != ly_do_md:
-                            n_e += 1
-                        else:
-                            n_a += 1
-                    if err.get(day, "").strip():
-                        n_err += 1
-            total = n_p + n_e + n_a
-            rate = (n_p / total * 100) if total else 0
-            rows.append({
-                "ma": ma, "name": d["name"], "class": d["class"],
-                "to": d.get("to", "") or "—",
-                "present": n_p, "excused": n_e, "absent": n_a,
-                "total": total, "rate": rate, "errors": n_err,
-            })
-            tot_p += n_p; tot_e += n_e; tot_a += n_a
-            cls = d["class"] or "(Không lớp)"
-            arr = by_class.setdefault(cls, [0, 0, 0, 0])
-            arr[0] += n_p; arr[1] += n_e; arr[2] += n_a; arr[3] += 1
+        # ── Nội dung chính (tạo trước container rỗng) ──
+        body_container = tk.Frame(card, bg=self.NEN)
+        body_container.pack(fill="both", expand=True)
 
-        # ── Notebook ──
-        st = ttk.Style()
-        st.configure("Stats.TNotebook", background=self.NEN, borderwidth=0)
-        st.configure("Stats.TNotebook.Tab",
-                     background=self.NEN2, foreground=self.CHU_MO,
-                     padding=[16, 8],
-                     font=("Segoe UI", 10, "bold"), borderwidth=0)
-        st.map("Stats.TNotebook.Tab",
-               background=[("selected", self.NEN3)],
-               foreground=[("selected", self.XANH_DUONG)])
+        def get_weeks(period):
+            return _get_weeks_for_period(period)
 
-        nb = ttk.Notebook(card, style="Stats.TNotebook")
-        nb.pack(fill="both", expand=True, padx=10, pady=10)
+        def rebuild_content():
+            # Xóa nội dung cũ
+            for w in body_container.winfo_children():
+                w.destroy()
 
-        # ── Tab 1: bảng ──
-        tab_table = tk.Frame(nb, bg=self.NEN)
-        nb.add(tab_table, text="  📋 Bảng số liệu  ")
-        tv_frame = tk.Frame(tab_table, bg=self.NEN)
-        tv_frame.pack(fill="both", expand=True, padx=8, pady=8)
-        cols = ("name", "class", "to", "present", "excused",
-                "absent", "rate", "errors")
-        tv = ttk.Treeview(tv_frame, columns=cols, show="headings")
-        for k, txt, w in [
-            ("name",    "Học sinh",   220),
-            ("class",   "Lớp",         75),
-            ("to",      "Tổ",          50),
-            ("present", "Có mặt",      80),
-            ("excused", "Có phép",     80),
-            ("absent",  "Không phép",  90),
-            ("rate",    "Tỉ lệ",        90),
-            ("errors",  "Lỗi",          60),
-        ]:
-            tv.heading(k, text=txt)
-            tv.column(k, width=w, anchor="center" if k != "name" else "w")
-        sc = ttk.Scrollbar(tv_frame, orient="vertical", command=tv.yview)
-        tv.configure(yscrollcommand=sc.set)
-        tv.pack(side="left", fill="both", expand=True)
-        sc.pack(side="right", fill="y")
-        for i, r in enumerate(sorted(rows, key=lambda x: x["rate"])):
-            tag = "le" if i % 2 else "chan"
-            tv.tag_configure(tag,
-                             background=self.NEN2 if i % 2 else self.NEN)
-            tv.insert("", "end", values=(
-                r["name"], r["class"], r["to"],
-                r["present"], r["excused"], r["absent"],
-                f"{r['rate']:.1f}%", r["errors"],
-            ), tags=(tag,))
+            period = period_var.get()
+            self.settings["stats_period"] = period
+            save_settings(self.settings)
+            WEEKS = get_weeks(period)
 
-        # ── Tab 2: biểu đồ ──
-        tab_chart = tk.Frame(nb, bg=self.NEN)
-        nb.add(tab_chart, text="  📊 Biểu đồ  ")
-        cv_holder = tk.Frame(tab_chart, bg=self.NEN)
-        cv_holder.pack(fill="both", expand=True)
-        cv_scroll = ttk.Scrollbar(cv_holder, orient="vertical")
-        cv_scroll.pack(side="right", fill="y")
-        canvas = tk.Canvas(cv_holder, bg=self.NEN,
-                           highlightthickness=0, bd=0,
-                           yscrollcommand=cv_scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        cv_scroll.config(command=canvas.yview)
+            ly_do_md = self.settings["ly_do_mac_dinh"]
+            if not WEEKS:
+                WEEKS = list(range(1, TONG_TUAN + 1))
+            stats = compute_stats(self.HocSinh, WEEKS, ly_do_md)
 
-        def draw_all():
-            try:
-                if not canvas.winfo_exists(): return
-            except Exception:
-                return
-            self._ve_bieu_do_thong_ke(
-                canvas, rows, by_class, tot_p, tot_e, tot_a)
+            rows = []
+            tot_p = tot_e = tot_a = 0
+            for h in stats["hs_rows"]:
+                rows.append({
+                    "ma": h["ma"], "name": h["name"], "class": h["class"],
+                    "to": h["to"],
+                    "present": h["cm"], "excused": h["vp"],
+                    "absent": h["vkp"], "total": h["total"],
+                    "rate": h["rate"], "errors": h["loi"],
+                })
+                tot_p += h["cm"]; tot_e += h["vp"]; tot_a += h["vkp"]
+            by_class = stats["by_class"]
 
-        _job = {"id": None}
-        _last_w = {"v": 0}
-        def schedule_draw(event=None):
-            try: w_now = canvas.winfo_width()
-            except Exception: return
-            if abs(w_now - _last_w["v"]) < 20: return
-            _last_w["v"] = w_now
-            if _job["id"]:
-                try: card.after_cancel(_job["id"])
-                except Exception: pass
-            _job["id"] = card.after(180, draw_all)
-        canvas.bind("<Configure>", schedule_draw)
-        card.after(80, draw_all)
+            # ── Notebook ──
+            st = ttk.Style()
+            st.configure("Stats.TNotebook", background=self.NEN, borderwidth=0)
+            st.configure("Stats.TNotebook.Tab",
+                         background=self.NEN2, foreground=self.CHU_MO,
+                         padding=[16, 8],
+                         font=("Segoe UI", 10, "bold"), borderwidth=0)
+            st.map("Stats.TNotebook.Tab",
+                   background=[("selected", self.NEN3)],
+                   foreground=[("selected", self.XANH_DUONG)])
 
-        def _wh(e): canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        def _lh(e): canvas.yview_scroll(int(-1 if e.num == 4 else 1), "units")
-        canvas.bind("<MouseWheel>", _wh)
-        canvas.bind("<Button-4>", _lh)
-        canvas.bind("<Button-5>", _lh)
+            nb = ttk.Notebook(body_container, style="Stats.TNotebook")
+            nb.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # Tab 1 — bảng
+            tab_table = tk.Frame(nb, bg=self.NEN)
+            nb.add(tab_table, text="  📋 Bảng số liệu  ")
+            tv_frame = tk.Frame(tab_table, bg=self.NEN)
+            tv_frame.pack(fill="both", expand=True, padx=8, pady=8)
+            cols = ("name", "class", "to", "present", "excused",
+                    "absent", "rate", "errors")
+            tv = ttk.Treeview(tv_frame, columns=cols, show="headings")
+            for k, txt, w in [
+                ("name",    "Học sinh",   220),
+                ("class",   "Lớp",         75),
+                ("to",      "Tổ",          50),
+                ("present", "Có mặt",      80),
+                ("excused", "Có phép",     80),
+                ("absent",  "Không phép",  90),
+                ("rate",    "Tỉ lệ",        90),
+                ("errors",  "Lỗi",          60),
+            ]:
+                tv.heading(k, text=txt)
+                tv.column(k, width=w, anchor="center" if k != "name" else "w")
+            sc = ttk.Scrollbar(tv_frame, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sc.set)
+            tv.pack(side="left", fill="both", expand=True)
+            sc.pack(side="right", fill="y")
+            for i, r in enumerate(sorted(rows, key=lambda x: x["rate"])):
+                tag = "le" if i % 2 else "chan"
+                tv.tag_configure(tag,
+                                 background=self.NEN2 if i % 2 else self.NEN)
+                tv.insert("", "end", values=(
+                    r["name"], r["class"], r["to"],
+                    r["present"], r["excused"], r["absent"],
+                    f"{r['rate']:.1f}%", r["errors"],
+                ), tags=(tag,))
+
+            # Tab 2 — biểu đồ
+            tab_chart = tk.Frame(nb, bg=self.NEN)
+            nb.add(tab_chart, text="  📊 Biểu đồ  ")
+            cv_holder = tk.Frame(tab_chart, bg=self.NEN)
+            cv_holder.pack(fill="both", expand=True)
+            cv_scroll = ttk.Scrollbar(cv_holder, orient="vertical")
+            cv_scroll.pack(side="right", fill="y")
+            canvas = tk.Canvas(cv_holder, bg=self.NEN,
+                               highlightthickness=0, bd=0,
+                               yscrollcommand=cv_scroll.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            cv_scroll.config(command=canvas.yview)
+
+            def draw_all():
+                try:
+                    if not canvas.winfo_exists(): return
+                except Exception:
+                    return
+                self._ve_bieu_do_thong_ke(
+                    canvas, rows, by_class, tot_p, tot_e, tot_a)
+
+            card.after(80, draw_all)
+            canvas.bind("<Configure>", lambda e: card.after(180, draw_all))
+
+            def _wh(e): canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            def _lh(e): canvas.yview_scroll(int(-1 if e.num == 4 else 1), "units")
+            canvas.bind("<MouseWheel>", _wh)
+            canvas.bind("<Button-4>", _lh)
+            canvas.bind("<Button-5>", _lh)
+
+        # Sync dropdown → rebuild
+        def on_period_change(event=None):
+            lbl = period_cbb.get()
+            val = lbl_to_val.get(lbl, "year")
+            period_var.set(val)
+            rebuild_content()
+            self.thong_bao(f"📊 Đã đổi kỳ: {lbl}", self.XANH_DUONG)
+
+        period_cbb.bind("<<ComboboxSelected>>", on_period_change)
+
+        # Build lần đầu
+        rebuild_content()
 
         # ── Footer ──
         footer = tk.Frame(card, bg=self.NEN2, height=52)
@@ -7109,6 +8158,13 @@ class UngDungQuanLy:
         load_commits()
     
     def khi_dong(self):
+        # Nếu đang load dở → đợi tối đa 1.5s
+        if not getattr(self, "_data_loaded", True):
+            for _ in range(15):
+                if self._data_loaded:
+                    break
+                _time.sleep(0.1)
+
         for attr in ("_settings_cover", "_settings_overlay",
                      "_settings_shadow", "_settings_blur"):
             w = getattr(self, attr, None)
@@ -7124,12 +8180,15 @@ class UngDungQuanLy:
         if self._dirty and not getattr(self, "read_only", False):
             # Save trong thread — không block UI, chờ tối đa 3 giây
             done = {"ok": False}
+            snap_close = deepcopy(self.HocSinh)
+            base_close = deepcopy(getattr(self, "_base", None))
 
             def _save():
                 try:
-                    ghi_file(self.HocSinh, self.settings["ly_do_mac_dinh"],
+                    ghi_file(snap_close, self.settings["ly_do_mac_dinh"],
                              DATA_FILE,
-                             backup_count=self.settings["backup_count"])
+                             backup_count=self.settings["backup_count"],
+                             base=base_close)
                 except Exception as e:
                     log_error(f"Save on close: {e}")
                 finally:
@@ -7137,7 +8196,7 @@ class UngDungQuanLy:
 
             t = threading.Thread(target=_save, daemon=True)
             t.start()
-            t.join(timeout=3.0)
+            t.join(timeout=10.0)
             if not done["ok"]:
                 log_warn("Save on close timeout — đóng app ngay")
 
@@ -7150,7 +8209,7 @@ class UngDungQuanLy:
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print("═" * 62)
-    print("  HỆ THỐNG QUẢN LÝ HỌC SINH v2.3")
+    print(f"  HỆ THỐNG QUẢN LÝ HỌC SINH v{APP_VERSION}")
     print("═" * 62)
     if os.path.exists(GH_CONFIG_FILE):
         print(f"  Config: {GH_CONFIG_FILE}")
