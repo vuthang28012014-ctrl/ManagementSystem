@@ -12,6 +12,11 @@
   "enable_confetti": true,
   "tong_tuan": 35,
   "tuan_hk1": 18,
+  "auto_check_update": true,
+  "export_format": "html",
+  "last_update_check": 1792156750.4191263,
+  "migrated_unrecorded": true,
+  "script_path": "",
   "ly_do_goi_y": [
     "Không phép",
     "Có phép",
@@ -20,5 +25,13 @@
     "Đi khám bệnh",
     "Đại hội",
     "Thi HSG"
-  ]
+  ],
+  "zalo_enabled": false,
+  "zalo_bot_token": "",
+  "zalo_chat_id": "",
+  "zalo_notify_on_save": true,
+  "zalo_min_absent": 1,
+  "zalo_last_sent": 0,
+  "pdf_open_after_export": true,
+  "stats_period": "📅 Cả năm"
 }
