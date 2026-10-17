@@ -1,6 +1,6 @@
 """
 ═════════════════════════════════════════════════════════════════
-Hệ Thống Quản Lý Học Sinh v2.4 — Full Fixes
+Hệ Thống Quản Lý Học Sinh v2.5 — Full Fixes
 ═════════════════════════════════════════════════════════════════
 """
 import os
@@ -12,6 +12,7 @@ import threading
 import traceback
 import random
 import hashlib
+import hmac
 import html as _html
 import queue
 import re
@@ -52,18 +53,29 @@ ZALO_API_BASE = "https://bot-api.zaloplatforms.com"
 
 
 def zalo_send(bot_token, chat_id, text, timeout=12, parse_mode="html"):
-    """Gửi tin nhắn qua Zalo Bot Platform. Trả (ok, err)."""
+    """Gửi Zalo; nếu HTTP 400 khi dùng parse_mode thì gửi lại dạng text thuần."""
+    ok, err = _zalo_send_once(bot_token, chat_id, text, timeout, parse_mode)
+    if not ok and parse_mode and str(err).startswith("HTTP 400"):
+        plain = _html.unescape(re.sub(r"<[^>]+>", "", text))
+        return _zalo_send_once(bot_token, chat_id, plain, timeout, None)
+    return ok, err
+
+
+def _zalo_send_once(bot_token, chat_id, text, timeout=12, parse_mode="html"):
+    """Gửi 1 lần qua Zalo Bot Platform. Trả (ok, err)."""
     if not URLLIB_OK:
         return False, "Thiếu urllib"
     if not bot_token or not chat_id:
         return False, "Thiếu token/chat_id"
     try:
         url = f"{ZALO_API_BASE}/bot{bot_token.strip()}/sendMessage"
-        body = json.dumps({
+        payload = {
             "chat_id": str(chat_id).strip(),
             "text": text,
-            "parse_mode": parse_mode,
-        }).encode("utf-8")
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=body,
             headers={"Content-Type": "application/json; charset=utf-8"},
@@ -92,6 +104,27 @@ def zalo_test(bot_token, chat_id):
            f"Thời gian: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
            f"Từ: Hệ Thống Quản Lý Học Sinh v{APP_VERSION}")
     return zalo_send(bot_token, chat_id, msg)
+
+
+def _chia_tin_nhan(text, limit=1800):
+    """Chia tin dài thành nhiều phần <= limit ký tự, cắt theo dòng.
+    (Giới hạn độ dài của Zalo Bot mình chưa kiểm chứng; 1800 là mức đặt an toàn.)"""
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = line if not cur else cur + "\n" + line
+    if cur.strip():
+        parts.append(cur)
+    return parts or [text]
 
 
 def _build_zalo_absent_message(hoc_sinh, tuan, ly_do_md, min_absent=1):
@@ -228,6 +261,8 @@ GH_CONFIG_FILE = os.path.join(SCRIPT_DIR, "github_config.json")
 SETTINGS_FILE  = os.path.join(SCRIPT_DIR, "settings.json")
 DATA_FILE      = os.path.join(SCRIPT_DIR, "output.txt")
 LOG_FILE       = os.path.join(SCRIPT_DIR, "app.log")
+BASE_FILE      = DATA_FILE + ".base"      # bản đã đồng bộ lần cuối (base merge 3 chiều)
+PENDING_FILE   = DATA_FILE + ".pending"   # tồn tại = còn dữ liệu local chưa push
 
 # ═══════════════════════════════════════════════════════════════
 # AUTO UPDATE CONFIG
@@ -291,6 +326,9 @@ def _log(level, msg):
     line = f"[{ts}] [{level}] {msg}"
     with _log_lock:
         try:
+            if (os.path.exists(LOG_FILE)
+                    and os.path.getsize(LOG_FILE) > 1_000_000):
+                os.replace(LOG_FILE, LOG_FILE + ".1")
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except Exception:
@@ -321,8 +359,21 @@ def load_settings():
 
 def save_settings(s):
     try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        # _remember_script_path ghi script_path thẳng vào file → đừng để bản trong RAM ghi đè mất
+        if not s.get("script_path") and os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    old_sp = (json.load(f) or {}).get("script_path")
+                if old_sp:
+                    s["script_path"] = old_sp
+            except Exception:
+                pass
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(s, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SETTINGS_FILE)
     except Exception as e:
         log_warn(f"Không ghi được settings.json: {e}")
 
@@ -351,9 +402,20 @@ def _rgb_to_hex(rgb):
 
 def animate_color(widget, from_color, to_color, duration=150, steps=8,
                   attr="bg", on_done=None):
-    """Tween widget color (bg/fg) từ from_color → to_color."""
+    """Tween màu widget. Hủy animation cũ của chính widget và chạy từ màu HIỆN TẠI."""
     if not widget: return
+    # Hủy animation đang chạy (tránh 2 animation đè nhau → kẹt màu hover)
+    old = getattr(widget, "_color_anim_job", None)
+    if old:
+        try: widget.after_cancel(old)
+        except Exception: pass
+        widget._color_anim_job = None
+    # Các handler cũ dùng cờ _anim_busy để bỏ qua sự kiện Leave → luôn mở cờ
+    widget._anim_busy = False
     try:
+        cur_hex = str(widget.cget(attr))
+        if len(cur_hex) == 7 and cur_hex.startswith("#"):
+            from_color = cur_hex
         f = _hex_to_rgb(from_color)
         t = _hex_to_rgb(to_color)
     except Exception:
@@ -367,15 +429,17 @@ def animate_color(widget, from_color, to_color, duration=150, steps=8,
             return
         k = i / steps
         k = 1 - (1 - k) ** 3        # ease-out cubic
-        cur = tuple(_lerp(f[j], t[j], k) for j in range(3))
+        c = tuple(_lerp(f[j], t[j], k) for j in range(3))
         try:
-            widget.configure(**{attr: _rgb_to_hex(cur)})
+            widget.configure(**{attr: _rgb_to_hex(c)})
         except tk.TclError:
             return
         if i < steps:
-            widget.after(delay, lambda: step(i + 1))
-        elif on_done:
-            on_done()
+            widget._color_anim_job = widget.after(delay, lambda: step(i + 1))
+        else:
+            widget._color_anim_job = None
+            if on_done:
+                on_done()
 
     step(0)
 
@@ -400,11 +464,6 @@ def _remove_flash(tree, iid, tag, orig_tags):
             tree.item(iid, tags=orig_tags)
     except Exception:
         pass
-    # Xóa tag để tránh memory leak tích tụ
-    try:
-        tree.tag_delete(tag)
-    except Exception:
-        pass
 
 
 def flash_row(tree, iid, color="#45475a", duration=420):
@@ -413,9 +472,9 @@ def flash_row(tree, iid, color="#45475a", duration=420):
         if not tree.exists(iid): return
         FLASH_TAG = "_flash_row"
         tree.tag_configure(FLASH_TAG, background=color)
-        orig = list(tree.item(iid, "tags"))
-        if FLASH_TAG not in orig:
-            tree.item(iid, tags=orig + [FLASH_TAG])
+        orig = [t for t in tree.tk.splitlist(tree.item(iid, "tags"))
+                if t != FLASH_TAG]
+        tree.item(iid, tags=orig + [FLASH_TAG])
         tree.after(duration, lambda: _remove_flash(tree, iid, FLASH_TAG, orig))
     except Exception:
         pass
@@ -652,6 +711,24 @@ def _prompt_github_token(root, current_token=""):
     root.wait_window(dlg)
     return result["token"]
 
+# SHA256 của mật khẩu. Đổi mật khẩu: chạy
+#   python -c "import hashlib;print(hashlib.sha256('MAT_KHAU_MOI'.encode()).hexdigest())"
+# rồi dán vào đây, hoặc đặt khoá "password_sha256" trong settings.json (ưu tiên hơn).
+_PWD_SHA256_DEFAULT = "96da37e95d5cc34fe3bef6c89428df859b8a217630d0c664da1daf1539caacf5"
+
+
+def _check_password(pwd):
+    expected = _PWD_SHA256_DEFAULT
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                expected = (json.load(f).get("password_sha256") or expected)
+    except Exception:
+        pass
+    got = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(got, str(expected).strip().lower())
+
+
 def _prompt_password(root):
     """
     Dialog xác thực khi mở app.
@@ -744,7 +821,7 @@ def _prompt_password(root):
 
     def on_unlock():
         pwd = pwd_var.get().strip()
-        if pwd == "2014":
+        if _check_password(pwd):
             result["full"] = True
             dlg.destroy()
         else:
@@ -1094,7 +1171,7 @@ def github_content_at_sha(config, sha):
         log_error(f"Fetch content @{sha[:7]} fail: {e}")
         return None
 
-def github_health_check(config):
+def github_health_check(config, need_push=True):
     """Trả (ok, msg). Chạy trong thread."""
     if not config:
         return False, "no config"
@@ -1107,7 +1184,9 @@ def github_health_check(config):
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
-                if data.get("permissions", {}).get("push"):
+                if not data.get("private", True):
+                    return False, "Repo đang PUBLIC — dữ liệu HS bị lộ!"
+                if not need_push or data.get("permissions", {}).get("push"):
                     return True, "OK"
                 return False, "Không có quyền push"
     except urllib.error.HTTPError as e:
@@ -1251,6 +1330,14 @@ def _period_available(period) -> bool:
     return len(_get_weeks_for_period(period)) > 0
 
 
+def _thang_lich(m):
+    """Tháng học thứ m (1..9, 4 tuần/tháng) → tháng dương lịch (năm học bắt đầu tháng 9)."""
+    try:
+        return ((int(m) + 7) % 12) + 1
+    except (ValueError, TypeError):
+        return m
+
+
 def _period_label(period):
     """Label tiếng Việt cho period."""
     if period == "year": return "CẢ NĂM"
@@ -1267,13 +1354,23 @@ def _period_suffix(period):
     if period == "hk1":  return "hoc_ky_1"
     if period == "hk2":  return "hoc_ky_2"
     if period.startswith("month_"):
-        return f"thang_{period.split('_')[1]}"
+        return f"thang_{_thang_lich(period.split('_')[1])}"
     return "ca_nam"
 
 # ═══════════════════════════════════════════════════════════════
 # STATS — TÍNH TOÁN DÙNG CHUNG
 # ═══════════════════════════════════════════════════════════════
 from typing import Any
+
+def _fmt_rate(rate):
+    """Tỉ lệ → chuỗi; None (chưa có dữ liệu) → '—'."""
+    return "—" if rate is None else f"{rate:.1f}%"
+
+
+def _rate_sort(rate):
+    """Key sắp xếp tăng dần: chưa có dữ liệu xếp cuối."""
+    return (1, 0.0) if rate is None else (0, rate)
+
 
 def compute_stats(hoc_sinh: dict, weeks: list[int],
                    ly_do_md: str) -> dict[str, Any]:
@@ -1319,7 +1416,7 @@ def compute_stats(hoc_sinh: dict, weeks: list[int],
                 if (err.get(day, "") or "").strip():
                     n_loi += 1
         tt = n_cm + n_vp + n_vkp
-        rate = (n_cm / tt * 100) if tt else 0
+        rate = (n_cm / tt * 100) if tt else None
         hs_rows.append({
             "ma": ma, "name": d["name"], "class": d["class"],
             "to": d.get("to", "") or "—",
@@ -1355,7 +1452,7 @@ def compute_stats(hoc_sinh: dict, weeks: list[int],
             if any((err.get(day, "") or "").strip() for day in THU):
                 n_err_hs += 1
         tt = t_cm + t_vp + t_vkp
-        week_data.append((t, (t_cm / tt * 100) if tt else 0))
+        week_data.append((t, (t_cm / tt * 100) if tt else None))
         err_week_data.append((t, n_err_hs / n_hs * 100))
 
     # ── Theo lớp ──
@@ -1380,7 +1477,7 @@ def compute_stats(hoc_sinh: dict, weeks: list[int],
     class_data: list[tuple[str, float, int, int]] = []
     for cls, (p, e, a) in class_stats.items():
         tt = p + e + a
-        class_data.append((cls, (p / tt * 100) if tt else 0, p, tt))
+        class_data.append((cls, (p / tt * 100) if tt else None, p, tt))
     class_data.sort(key=lambda x: -x[1])
 
     # ── Theo lớp (chi tiết) ──
@@ -1555,7 +1652,9 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md, period="year"):
                 c.border = border
                 c.alignment = left if col == 3 else center
 
-            if r["rate"] >= 90:
+            if r["rate"] is None:
+                pass                     # chưa có dữ liệu → không tô màu
+            elif r["rate"] >= 90:
                 ws_sum.cell(row=row_i, column=10).fill = fill_cm
             elif r["rate"] >= 75:
                 ws_sum.cell(row=row_i, column=10).fill = fill_vp
@@ -1699,7 +1798,7 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md, period="year"):
         for i, rate in enumerate(week_rates, 1):
             tuan_label = WEEKS[i - 1] if i - 1 < len(WEEKS) else i
             ws_data.cell(row=1 + i, column=1, value=f"T{tuan_label}")
-            ws_data.cell(row=1 + i, column=2, value=round(rate, 2))
+            ws_data.cell(row=1 + i, column=2, value=None if rate is None else round(rate, 2))
 
         # Cột D, E: tổng quan
         ws_data["D1"] = "Loại"
@@ -1717,7 +1816,7 @@ def _build_xlsx_all(hoc_sinh, path, ly_do_md, period="year"):
         ws_data["H1"] = "Tỉ lệ (%)"
         for i, (cls, rate) in enumerate(class_items, 1):
             ws_data.cell(row=1 + i, column=7, value=cls)
-            ws_data.cell(row=1 + i, column=8, value=round(rate, 2))
+            ws_data.cell(row=1 + i, column=8, value=None if rate is None else round(rate, 2))
         # Cột J: mốc 90% (dùng cho reference line)
         ws_data["J1"] = "Mốc 90%"
         for idx, _t in enumerate(WEEKS, 1):
@@ -2124,7 +2223,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False, peri
         parts.append('</div>')
 
         # ── Line chart theo tuần ──
-        week_pts = [(f"T{t}", r) for t, r in stats["week_data"]]
+        week_pts = [(f"T{t}", r) for t, r in stats["week_data"] if r is not None]
 
         line_svg = _svg_line_chart(week_pts, width=900, height=280)
 
@@ -2138,6 +2237,8 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False, peri
         # ── Bar chart theo lớp ──
         class_bars = []
         for cls_i, rate_i, _p_i, _tt_i in stats["class_data"]:
+            if rate_i is None:
+                continue
             if rate_i >= 90:   c_i = "#22C55E"
             elif rate_i >= 75: c_i = "#EAB308"
             else:              c_i = "#EF4444"
@@ -2169,7 +2270,7 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False, peri
         parts.append('<div style="height:32px"></div>')
 
         # ── Bảng chi tiết ──
-        rows.sort(key=lambda r: r["rate"])
+        rows.sort(key=lambda r: _rate_sort(r["rate"]))
         parts.append('<table>')
         parts.append('<tr>'
                      '<th>STT</th><th>Mã</th><th>Họ tên</th>'
@@ -2178,7 +2279,9 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False, peri
                      '<th>Vắng KP</th><th>Lỗi</th><th>Tỉ lệ</th>'
                      '</tr>')
         for stt, r in enumerate(rows, 1):
-            if r["rate"] >= 90:
+            if r["rate"] is None:
+                cls_rate = ""
+            elif r["rate"] >= 90:
                 cls_rate = "rate-good"
             elif r["rate"] >= 75:
                 cls_rate = "rate-ok"
@@ -2194,12 +2297,12 @@ def _build_html_report(hoc_sinh, path, ly_do_md, tuan=None, for_word=False, peri
             parts.append(f'<td>{r["vp"]}</td>')
             parts.append(f'<td>{r["vkp"]}</td>')
             parts.append(f'<td>{r["loi"]}</td>')
-            parts.append(f'<td class="{cls_rate}">{r["rate"]:.1f}%</td>')
+            parts.append(f'<td class="{cls_rate}">{_fmt_rate(r["rate"])}</td>')
             parts.append('</tr>')
         parts.append('</table>')
 
         parts.append('<div class="footer">'
-                     'Hệ Thống Quản Lý Học Sinh v2.4 — '
+                     f'Hệ Thống Quản Lý Học Sinh v{APP_VERSION} — '
                      'in bằng Ctrl+P hoặc nút phía trên</div>')
         parts.append('</div></body></html>')
 
@@ -2227,6 +2330,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md, period="year"):
                            .replace(">", "&gt;"))
 
         def color_of(rate):
+            if rate is None: return "#EEEEEE", "#666666"
             if rate >= 90:   return "#C6EFCE", "#1a5c1a"
             elif rate >= 75: return "#FFEB9C", "#7a5a00"
             else:            return "#FFC7CE", "#8b1a2a"
@@ -2242,8 +2346,8 @@ def _build_word_report(hoc_sinh, path, ly_do_md, period="year"):
         all_loi    = stats["totals"]["loi"]
         total_all  = stats["totals"]["total"]
         rate_all   = stats["totals"]["rate"]
-        week_data  = stats["week_data"]
-        class_data = stats["class_data"]
+        week_data  = [(t, r) for t, r in stats["week_data"] if r is not None]
+        class_data = [c for c in stats["class_data"] if c[1] is not None]
         err_data   = stats["err_week_data"]
 
         # ── Build HTML ──
@@ -2336,7 +2440,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md, period="year"):
 
         # ── Chuyên cần theo tuần ──
         parts.append('<h2>📈 Tỉ lệ có mặt theo tuần</h2>')
-        for chunk_start in range(0, len(WEEKS), 10):
+        for chunk_start in range(0, len(week_data), 10):
             chunk = week_data[chunk_start:chunk_start + 10]
             parts.append('<table cellpadding="3" cellspacing="0" '
                          'style="width:100%;margin:4pt 0">')
@@ -2391,7 +2495,7 @@ def _build_word_report(hoc_sinh, path, ly_do_md, period="year"):
 
         # ── Bảng chi tiết ──
         parts.append('<h2>📋 Bảng chi tiết học sinh</h2>')
-        rows.sort(key=lambda r: r["rate"])
+        rows.sort(key=lambda r: _rate_sort(r["rate"]))
         parts.append('<table cellpadding="3" cellspacing="0" '
                      'style="width:100%">')
         parts.append('<tr>'
@@ -2420,14 +2524,14 @@ def _build_word_report(hoc_sinh, path, ly_do_md, period="year"):
                 f'<td>{r["vkp"]}</td>'
                 f'<td>{r["loi"]}</td>'
                 f'<td style="background:{bg};color:{fg};font-weight:bold">'
-                f'{r["rate"]:.1f}%</td>'
+                f'{_fmt_rate(r["rate"])}</td>'
                 f'</tr>')
         parts.append('</table>')
 
         # Footer
         parts.append('<p style="text-align:center;color:#888;'
                      'font-size:9pt;margin-top:16pt">'
-                     'Hệ Thống Quản Lý Học Sinh v2.4 — xuất Word</p>')
+                     f'Hệ Thống Quản Lý Học Sinh v{APP_VERSION} — xuất Word</p>')
         parts.append('</body></html>')
 
         with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -2460,7 +2564,7 @@ def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
             "hk2":  "HỌC KỲ 2",
         }.get(period)
         if period_label is None and period.startswith("month_"):
-            period_label = f"THÁNG {period.split('_')[1]}"
+            period_label = _period_label(period)
         if period_label is None:
             period_label = "CẢ NĂM"
 
@@ -2567,7 +2671,7 @@ def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
                 Paragraph(xml_escape(str(cls)), st_cell_b),
                 Paragraph(str(tt), st_cell_c),
                 Paragraph(str(p), st_cell_c),
-                Paragraph(f"<b>{rate:.1f}%</b>", st_cell_c),
+                Paragraph(f"<b>{_fmt_rate(rate)}</b>", st_cell_c),
             ])
         t_cls = Table(cdata, colWidths=[5 * cm, 3 * cm, 3 * cm, 3 * cm])
         cls_styles = [
@@ -2579,6 +2683,8 @@ def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ]
         for i, (_, rate, _, _) in enumerate(class_items, start=1):
+            if rate is None:
+                continue
             if rate >= 90:
                 cls_styles.append(("BACKGROUND", (3, i), (3, i),
                                     rl_colors.HexColor("#C6EFCE")))
@@ -2593,7 +2699,7 @@ def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
 
         # ── Chi tiết HS ──
         story.append(Paragraph("Bảng chi tiết học sinh", st_h2))
-        rows_sorted = sorted(rows, key=lambda r: r["rate"])
+        rows_sorted = sorted(rows, key=lambda r: _rate_sort(r["rate"]))
         hdr = [
             Paragraph("<b>STT</b>", st_cell_c),
             Paragraph("<b>Mã</b>", st_cell_c),
@@ -2618,7 +2724,7 @@ def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
                 Paragraph(str(r["vp"]), st_cell_c),
                 Paragraph(str(r["vkp"]), st_cell_c),
                 Paragraph(str(r["loi"]), st_cell_c),
-                Paragraph(f"<b>{r['rate']:.1f}%</b>", st_cell_c),
+                Paragraph(f"<b>{_fmt_rate(r['rate'])}</b>", st_cell_c),
             ])
         t_det = Table(detail_data,
                        colWidths=[1.1 * cm, 1.4 * cm, 5.5 * cm, 1.6 * cm,
@@ -2637,6 +2743,8 @@ def _build_pdf_report(hoc_sinh, path, ly_do_md, period="year"):
             if i % 2 == 0:
                 det_styles.append(("BACKGROUND", (0, i), (-1, i),
                                     rl_colors.HexColor("#F5F7FA")))
+            if r["rate"] is None:
+                continue
             if r["rate"] >= 90:
                 det_styles.append(("BACKGROUND", (9, i), (9, i),
                                     rl_colors.HexColor("#C6EFCE")))
@@ -3093,6 +3201,44 @@ def _fix_double_newlines(text):
     cleaned = _re.sub(r"\n{4,}", "\n\n\n", cleaned)
     return cleaned
 
+def _save_base_text(text):
+    """Lưu bản vừa đồng bộ với GitHub để lần sau merge 3 chiều (kể cả khi khởi động offline)."""
+    try:
+        tmp = BASE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, BASE_FILE)
+    except Exception as e:
+        log_warn(f"Không lưu được base: {e}")
+
+
+def _load_base_data():
+    """Đọc base đã lưu. Trả dict {sid_int: info} hoặc None."""
+    try:
+        if not os.path.exists(BASE_FILE):
+            return None
+        with open(BASE_FILE, "r", encoding="utf-8") as f:
+            txt = f.read()
+        if not txt.strip():
+            return None
+        return _normalize_remote(json.loads(txt))
+    except Exception as e:
+        log_warn(f"Không đọc được base: {e}")
+        return None
+
+
+def _set_pending(flag):
+    """flag=True: đánh dấu còn dữ liệu local chưa push. False: xóa dấu."""
+    try:
+        if flag:
+            with open(PENDING_FILE, "w", encoding="utf-8") as f:
+                f.write(datetime.now().isoformat())
+        elif os.path.exists(PENDING_FILE):
+            os.remove(PENDING_FILE)
+    except Exception as e:
+        log_warn(f"Pending flag fail: {e}")
+
+
 def doc_file(HocSinh: dict, filename: str = DATA_FILE) -> tuple[int, list[str]]:
     """Load data — ưu tiên GitHub, fallback local.
     Trả về (số_hs, warnings_list)."""
@@ -3104,7 +3250,9 @@ def doc_file(HocSinh: dict, filename: str = DATA_FILE) -> tuple[int, list[str]]:
     if GH_CONFIG:
         log_info(f"Đang tải từ GitHub {GH_CONFIG['owner']}/{GH_CONFIG['repo']}...")
         gh = github_fetch(GH_CONFIG)
-        if gh:
+        if gh and os.path.exists(PENDING_FILE) and os.path.exists(filename):
+            log_warn("Còn dữ liệu local chưa push — giữ local, sẽ merge khi lưu")
+        elif gh:
             content = gh
             LOADED_FROM_REMOTE = True
             try:
@@ -3116,6 +3264,7 @@ def doc_file(HocSinh: dict, filename: str = DATA_FILE) -> tuple[int, list[str]]:
                     _backup_file(filename, keep=5)
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(content)
+                _save_base_text(content)
                 log_info("✓ Đã đồng bộ từ GitHub")
             except Exception as e:
                 log_warn(f"Không ghi local: {e}")
@@ -3588,6 +3737,8 @@ def ghi_file(HocSinh: dict, ly_do_mac_dinh: str,
                     os.fsync(f.fileno())
                 os.replace(tmp, filename)
                 ok_local = True
+                if GH_CONFIG:
+                    _set_pending(True)    # local đã ghi nhưng chưa chắc push xong
                 log_info("✓ Ghi local OK")
             except Exception as e:
                 log_error(f"Ghi local lỗi: {e}")
@@ -3600,6 +3751,8 @@ def ghi_file(HocSinh: dict, ly_do_mac_dinh: str,
                                                   sha=remote_sha)
             if ok_gh:
                 log_info(f"✓ Push GitHub OK (lần {attempt+1})")
+                _save_base_text(content)
+                _set_pending(False)
                 return ok_local, True, None, merged_dict
 
             last_err = err
@@ -3656,6 +3809,19 @@ class UndoStack:
 # CHANGELOG
 # ═══════════════════════════════════════════════════════════════
 CHANGELOG_ENTRIES = [
+    ("v2.5", "2026-10-17", [
+        ("section", "🐛 Fix bug"),
+        ("item", "  • Không mất dữ liệu offline: pending flag + base lưu đĩa"),
+        ("item", "  • Tỉ lệ chưa có dữ liệu hiển thị '—' thay vì 0%"),
+        ("item", "  • Tháng hiển thị theo dương lịch (năm học từ tháng 9)"),
+        ("item", "  • Fix hover kẹt màu, flash_row kẹt, Ctrl+Z khi đang gõ"),
+        ("item", "  • Zalo: chống gửi lặp, chia tin dài, fallback text thuần"),
+        ("item", "  • Đóng app không đơ, không lưu chồng"),
+        ("sep", ""),
+        ("section", "🔒 Bảo mật"),
+        ("item", "  • Mật khẩu dạng hash, cảnh báo repo public"),
+        ("item", "  • Chế độ chỉ xem không đổi token/Zalo/cập nhật"),
+    ]),
     ("v2.4", "2026-10-16", [
         ("section", "🐛 Fix bug"),
         ("item", "  • Fix NameError 'stats' trong _build_xlsx_all"),
@@ -3751,7 +3917,7 @@ class UngDungQuanLy:
         global GH_CONFIG
 
         self.root = root
-        self.root.title("Hệ Thống Quản Lý Học Sinh v2.4")
+        self.root.title(f"Hệ Thống Quản Lý Học Sinh v{APP_VERSION}")
         self.root.geometry("1280x880")
         self.root.configure(bg=self.NEN)
         self.root.minsize(1120, 760)
@@ -3885,8 +4051,13 @@ class UngDungQuanLy:
             self.HocSinh.clear()
             self.HocSinh.update(new_data)
             log_info(f"✓ Đã swap {len(new_data)} HS vào UI state")
-            # Base cho merge 3 chiều: chỉ tin base khi dữ liệu vừa tải từ GitHub
-            self._base = deepcopy(new_data) if LOADED_FROM_REMOTE else None
+            # Base cho merge 3 chiều: bản vừa tải từ GitHub, hoặc bản đã lưu ở lần đồng bộ trước
+            if LOADED_FROM_REMOTE:
+                self._base = deepcopy(new_data)
+            else:
+                self._base = _load_base_data()
+            if os.path.exists(PENDING_FILE) and not self.read_only:
+                self._dirty = True      # còn dữ liệu chưa push → để auto-save đẩy lên
             # Migrate dữ liệu cũ: ô chưa điểm danh bị tự điền "Không phép"
             if not self.settings.get("migrated_unrecorded", False):
                 n_fix = migrate_unrecorded(
@@ -4007,7 +4178,7 @@ class UngDungQuanLy:
 
     def _health_check_gh(self):
         global GH_CONFIG
-        ok, msg = github_health_check(GH_CONFIG)
+        ok, msg = github_health_check(GH_CONFIG, need_push=not self.read_only)
         self._ui_queue.put((lambda _a: self._on_health_result(ok, msg), None))
 
     def _on_health_result(self, ok, msg):
@@ -4027,11 +4198,31 @@ class UngDungQuanLy:
         self.root.bind_all("<Control-F>", lambda e: self._focus_tim())
         self.root.bind_all("<Control-n>", lambda e: self.o_ma.focus_set())
         self.root.bind_all("<Control-N>", lambda e: self.o_ma.focus_set())
-        self.root.bind_all("<Control-z>", lambda e: self.undo())
-        self.root.bind_all("<Control-Z>", lambda e: self.undo())
-        self.root.bind_all("<Control-y>", lambda e: self.redo())
-        self.root.bind_all("<Control-Y>", lambda e: self.redo())
+        self.root.bind_all("<Control-z>", self._on_ctrl_z)
+        self.root.bind_all("<Control-Z>", self._on_ctrl_z)
+        self.root.bind_all("<Control-y>", self._on_ctrl_y)
+        self.root.bind_all("<Control-Y>", self._on_ctrl_y)
         self.root.bind_all("<Escape>",    lambda e: self._on_escape())
+
+    def _dang_go_chu(self):
+        try:
+            w = self.root.focus_get()
+        except Exception:
+            return False
+        return isinstance(w, (tk.Entry, tk.Text, tk.Spinbox,
+                              ttk.Entry, ttk.Combobox))
+
+    def _on_ctrl_z(self, event=None):
+        if self._dang_go_chu():
+            return None          # để ô nhập tự xử lý
+        self.undo()
+        return "break"
+
+    def _on_ctrl_y(self, event=None):
+        if self._dang_go_chu():
+            return None
+        self.redo()
+        return "break"
 
     def _on_escape(self):
         """Esc: đóng settings nếu đang mở, ngược lại xóa panel chi tiết."""
@@ -4049,6 +4240,9 @@ class UngDungQuanLy:
     def doi_token_github(self):
         """Mở dialog đổi token GitHub."""
         global GH_CONFIG
+        if getattr(self, "read_only", False):
+            self.thong_bao("🔒 Chế độ CHỈ XEM — không đổi được token", self.DO)
+            return
 
         current = ""
         cfg = _read_gh_config()
@@ -4089,8 +4283,9 @@ class UngDungQuanLy:
             return fetch_remote_script()
 
         def on_done(remote):
-            self.settings["last_update_check"] = _time.time()
-            save_settings(self.settings)
+            if remote:    # tải lỗi thì không khóa 6 giờ
+                self.settings["last_update_check"] = _time.time()
+                save_settings(self.settings)
 
             if not remote:
                 if force:
@@ -4233,12 +4428,22 @@ class UngDungQuanLy:
 
     def _apply_update(self, remote_content, dlg):
         """Ghi file mới + backup file cũ."""
+        if getattr(self, "read_only", False):
+            messagebox.showwarning(
+                "Chỉ xem",
+                "Chế độ CHỈ XEM không được cập nhật. Mở lại app bằng mật khẩu.",
+                parent=dlg)
+            return
         script_path = _get_self_path()
 
         # ── Chuẩn hóa xuống dòng về LF để tránh \r\r\n khi ghi ──
         remote_content = _norm_text(remote_content)
         _lines = remote_content.split("\n")
-        if _lines and sum(1 for ln in _lines if not ln.strip()) / len(_lines) > 0.35:
+        _nonblank = sum(1 for ln in _lines if ln.strip())
+        _followed = sum(1 for i in range(len(_lines) - 1)
+                        if _lines[i].strip() and not _lines[i + 1].strip())
+        # File kép: gần như mọi dòng có chữ đều bị 1 dòng trống theo sau
+        if _nonblank and _followed / _nonblank > 0.8:
             remote_content = _fix_double_newlines(remote_content)
 
         # ── Kiểm tra cú pháp trước khi ghi đè chính mình ──
@@ -5036,7 +5241,7 @@ class UngDungQuanLy:
         self.nut_them_sua.pack(fill="x", padx=20, pady=(20, 8))
 
         self.nut_lam_moi = self._tao_nut(
-            form, "🔄  Làm mới form (Esc)", self.xoa_form,
+            form, "🔄  Làm mới form", self.xoa_form,
             self.NEN3, self.NEN3)
         self.nut_lam_moi.pack(fill="x", padx=20, pady=(0, 20))
 
@@ -5507,6 +5712,8 @@ class UngDungQuanLy:
             self.cap_nhat_diem_danh()
             self._xoa_panel_ct()
             self._base = deepcopy(self.HocSinh)
+            _save_base_text(content)
+            _set_pending(False)
             self._dirty = False
             self.thong_bao(f"✓ Đã tải {len(self.HocSinh)} HS từ GitHub", self.XANH_LA)
 
@@ -5815,7 +6022,8 @@ class UngDungQuanLy:
             n = len(self.HocSinh)
             if ok_local and ok_gh:
                 self.thong_bao(f"✓ Pull-merge-push {n} HS lên GitHub", self.XANH_LA)
-                self._spawn_confetti()
+                if not auto:
+                    self._spawn_confetti()
             elif ok_local:
                 msg = f"✓ Local OK ({n} HS)"
                 if GH_CONFIG:
@@ -6322,6 +6530,9 @@ class UngDungQuanLy:
         if w["attendance"].get(day, False):
             self.thong_bao("⚠ Ô này là CÓ MẶT, không cần lý do", self.VANG); return
         text = self.bien_ly_do.get().strip() or self.settings["ly_do_mac_dinh"]
+        if (w["reasons"].get(day, "") or "").strip() == text:
+            self.thong_bao("Không có thay đổi", self.CHU_MO)
+            return
         self._snapshot(f"Lý do {ma}/{day}")
         w["reasons"][day] = text
         self._cap_nhat_hang_dd(ma)
@@ -6345,6 +6556,9 @@ class UngDungQuanLy:
         d = self.HocSinh[ma]
         if w["attendance"].get(day, False):
             self.thong_bao("⚠ Ô này là CÓ MẶT", self.VANG); return
+        if (w["reasons"].get(day, "") or "").strip() == self.settings["ly_do_mac_dinh"]:
+            self.thong_bao("Không có thay đổi", self.CHU_MO)
+            return
         self._snapshot(f"Không phép {ma}/{day}")
         w["reasons"][day] = self.settings["ly_do_mac_dinh"]
         self.bien_ly_do.set(self.settings["ly_do_mac_dinh"])
@@ -6365,6 +6579,9 @@ class UngDungQuanLy:
         if not w: return
         d = self.HocSinh[ma]
         text = self.o_loi.get("1.0", "end-1c").strip()
+        if (w["errors"].get(day, "") or "").strip() == text:
+            self.thong_bao("Không có thay đổi", self.CHU_MO)
+            return
         self._snapshot(f"Lỗi {ma}/{day}")
         w["errors"][day] = text
         self._cap_nhat_hang_dd(ma)
@@ -6389,6 +6606,9 @@ class UngDungQuanLy:
         w = self._du_lieu_tuan(ma)
         if not w: return
         d = self.HocSinh[ma]
+        if not (w["errors"].get(day, "") or "").strip():
+            self.o_loi.delete("1.0", "end")
+            return
         self._snapshot(f"Xóa lỗi {ma}/{day}")
         w["errors"][day] = ""
         self.o_loi.delete("1.0", "end")
@@ -6558,7 +6778,9 @@ class UngDungQuanLy:
         class_items = []
         for cls, (p, e, a, cnt) in by_class.items():
             tt = p + e + a
-            rate = (p / tt * 100) if tt else 0
+            if tt == 0:
+                continue          # lớp chưa có dữ liệu → không vẽ cột 0%
+            rate = p / tt * 100
             class_items.append((cls, rate, p, tt, cnt))
         class_items.sort(key=lambda x: -x[1])
 
@@ -6837,6 +7059,17 @@ class UngDungQuanLy:
             log_warn(f"Không mở được file: {e}")
 
     # ─────────────────────────────────────────────────────
+    def _tuan_moi_nhat_co_du_lieu(self):
+        """Tuần lớn nhất có ít nhất 1 ô đã điểm danh/ghi lý do. None nếu chưa có."""
+        best = None
+        for d in self.HocSinh.values():
+            for t, w in (d.get("weeks") or {}).items():
+                if best is not None and t <= best:
+                    continue
+                if not _tuan_rong(w):
+                    best = t
+        return best
+
     def gui_thong_bao_zalo(self, auto=False):
         """
         Gửi thông báo vắng cho tuần hiện tại lên Zalo.
@@ -6857,7 +7090,10 @@ class UngDungQuanLy:
                     self.mo_settings_inline()
             return
 
-        tuan = self.tuan_hien_tai
+        if auto:
+            tuan = self._tuan_moi_nhat_co_du_lieu() or self.tuan_hien_tai
+        else:
+            tuan = self.tuan_hien_tai
         min_ab = int(self.settings.get("zalo_min_absent", 1))
         msg = _build_zalo_absent_message(
             self.HocSinh, tuan, self.settings["ly_do_mac_dinh"], min_ab)
@@ -6868,15 +7104,27 @@ class UngDungQuanLy:
                     self.XANH_LA)
             return
 
+        # Chống gửi lặp: bỏ dòng "Thời gian" rồi băm nội dung
+        _core = "\n".join(ln for ln in msg.split("\n")
+                          if not ln.startswith("Thời gian:"))
+        msg_hash = f"{tuan}:{_hash_str(_core)}"
+        if auto and self.settings.get("zalo_last_hash") == msg_hash:
+            return
+
         self.thong_bao("📨 Đang gửi Zalo...", self.XANH_DUONG)
 
         def task():
-            return zalo_send(token, chat_id, msg)
+            for chunk in _chia_tin_nhan(msg):
+                ok_c, err_c = zalo_send(token, chat_id, chunk)
+                if not ok_c:
+                    return ok_c, err_c
+            return True, None
 
         def on_done(res):
             ok, err = res
             if ok:
                 self.settings["zalo_last_sent"] = _time.time()
+                self.settings["zalo_last_hash"] = msg_hash
                 save_settings(self.settings)
                 self.thong_bao("✓ Đã gửi thông báo Zalo", self.XANH_LA)
             else:
@@ -6896,6 +7144,9 @@ class UngDungQuanLy:
 
     def mo_dialog_zalo(self):
         """Dialog cấu hình Zalo Bot + test."""
+        if getattr(self, "read_only", False):
+            self.thong_bao("🔒 Chế độ CHỈ XEM — không cấu hình được Zalo", self.DO)
+            return
         dlg = tk.Toplevel(self.root)
         dlg.title("📨 Cấu hình Zalo Bot")
         dlg.configure(bg=self.NEN)
@@ -7117,9 +7368,9 @@ class UngDungQuanLy:
                  ).pack(fill="x", pady=(0, 6))
 
         for val, label in [
-            ("year", "📅  Cả năm học          (35 tuần)"),
-            ("hk1",  "📘  Học kỳ 1            (tuần 1–18)"),
-            ("hk2",  "📗  Học kỳ 2            (tuần 19–35)"),
+            ("year", f"📅  Cả năm học          ({TONG_TUAN} tuần)"),
+            ("hk1",  f"📘  Học kỳ 1            (tuần 1–{TUAN_HK1})"),
+            ("hk2",  f"📗  Học kỳ 2            (tuần {TUAN_HK1 + 1}–{TONG_TUAN})"),
         ]:
             tk.Radiobutton(body, text=label, variable=var, value=val,
                            bg=self.NEN, fg=self.CHU,
@@ -7148,7 +7399,7 @@ class UngDungQuanLy:
             if not _period_available(f"month_{m}"):
                 continue                          # ← bỏ tháng rỗng
             tk.Radiobutton(
-                grid, text=f"🗓️ Tháng {m}",
+                grid, text=f"🗓️ Tháng {_thang_lich(m)}",
                 variable=var, value=f"month_{m}",
                 bg=self.NEN, fg=self.CHU,
                 selectcolor=self.NEN3,
@@ -7743,7 +7994,7 @@ class UngDungQuanLy:
                          ("hk1",  "📘 HK1"),
                          ("hk2",  "📗 HK2")]
         period_labels += [
-            (f"month_{m}", f"🗓️ Tháng {m}")
+            (f"month_{m}", f"🗓️ Tháng {_thang_lich(m)}")
             for m in range(1, 13)
             if _period_available(f"month_{m}")   # ← bỏ tháng rỗng
         ]
@@ -7853,14 +8104,14 @@ class UngDungQuanLy:
             tv.configure(yscrollcommand=sc.set)
             tv.pack(side="left", fill="both", expand=True)
             sc.pack(side="right", fill="y")
-            for i, r in enumerate(sorted(rows, key=lambda x: x["rate"])):
+            for i, r in enumerate(sorted(rows, key=lambda x: _rate_sort(x["rate"]))):
                 tag = "le" if i % 2 else "chan"
                 tv.tag_configure(tag,
                                  background=self.NEN2 if i % 2 else self.NEN)
                 tv.insert("", "end", values=(
                     r["name"], r["class"], r["to"],
                     r["present"], r["excused"], r["absent"],
-                    f"{r['rate']:.1f}%", r["errors"],
+                    _fmt_rate(r["rate"]), r["errors"],
                 ), tags=(tag,))
 
             # Tab 2 — biểu đồ
@@ -8157,7 +8408,24 @@ class UngDungQuanLy:
         render_diff([])
         load_commits()
     
+    def _finish_close(self):
+        try:
+            save_settings(self.settings)
+        except Exception as e:
+            log_warn(f"Save settings on close: {e}")
+        self.root.destroy()
+
     def khi_dong(self):
+        if getattr(self, "_closing", False):
+            return
+        # Đang có lần lưu khác → chờ nó xong (tối đa 15s) rồi mới đóng
+        if self._saving:
+            if not hasattr(self, "_close_t0"):
+                self._close_t0 = _time.time()
+            if _time.time() - self._close_t0 < 15:
+                self.root.after(200, self.khi_dong)
+                return
+
         # Nếu đang load dở → đợi tối đa 1.5s
         if not getattr(self, "_data_loaded", True):
             for _ in range(15):
@@ -8178,7 +8446,10 @@ class UngDungQuanLy:
 
         # Chỉ ghi output.txt khi CÓ quyền ghi VÀ có thay đổi chưa lưu
         if self._dirty and not getattr(self, "read_only", False):
-            # Save trong thread — không block UI, chờ tối đa 3 giây
+            self._closing = True
+            self._saving = True          # chặn sửa/lưu chồng trong lúc đóng
+            self.thong_bao("💾 Đang lưu trước khi thoát...", self.XANH_DUONG)
+            self._start_progress()
             done = {"ok": False}
             snap_close = deepcopy(self.HocSinh)
             base_close = deepcopy(getattr(self, "_base", None))
@@ -8194,14 +8465,21 @@ class UngDungQuanLy:
                 finally:
                     done["ok"] = True
 
-            t = threading.Thread(target=_save, daemon=True)
-            t.start()
-            t.join(timeout=10.0)
-            if not done["ok"]:
-                log_warn("Save on close timeout — đóng app ngay")
+            threading.Thread(target=_save, daemon=True).start()
+            t0 = _time.time()
 
-        save_settings(self.settings)
-        self.root.destroy()
+            def _wait():
+                if done["ok"]:
+                    self._finish_close()
+                elif _time.time() - t0 > 15:
+                    log_warn("Save on close timeout — đóng app ngay")
+                    self._finish_close()
+                else:
+                    self.root.after(100, _wait)   # UI vẫn mượt, không join()
+            _wait()
+            return
+
+        self._finish_close()
 
 
 # ═══════════════════════════════════════════════════════════════
